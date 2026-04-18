@@ -4,7 +4,7 @@ import java.net.Socket;
 import java.net.URL;
 import java.util.*;
 
-public class MyHTTPClient {
+public class MyHTTPClient { // This does the same that HTTPSClientGUI does but without intreface
     private static Scanner scanner = new Scanner(System.in);
     
     public static void main(String[] args) {

@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class Server {
 
-    private static final Map<Integer, String> cats = new ConcurrentHashMap<>();
+    private static final Map<Integer, String> memes = new ConcurrentHashMap<>();
     private static final AtomicInteger nextId = new AtomicInteger(1);
 
     public static void main(String[] args) throws Exception {
@@ -62,15 +62,15 @@ public class Server {
     }
 
     private static String route(String method, String path, String body) {
-        if ("GET".equals(method) && "/cats".equals(path)) {
-            String json = "[" + String.join(",", cats.values()) + "]";
+        if ("GET".equals(method) && "/memes".equals(path)) {    // GET that handles GET /memes
+            String json = "[" + String.join(",", memes.values()) + "]";
             return jsonResponse(200, "OK", json);
         }
 
-        if ("POST".equals(method) && "/cats".equals(path)) {
+        if ("POST".equals(method) && "/memes".equals(path)) {
             int id = nextId.getAndIncrement();
             String entry = "{\"id\":" + id + "," + body.substring(1);
-            cats.put(id, entry);
+            memes.put(id, entry);
             return jsonResponse(201, "Created", entry);
         }
 

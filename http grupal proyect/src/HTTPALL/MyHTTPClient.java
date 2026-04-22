@@ -1,4 +1,4 @@
-package src.HTTPALL;
+package HTTPALL;
 import java.io.*;
 import java.net.Socket;
 import java.net.URL;

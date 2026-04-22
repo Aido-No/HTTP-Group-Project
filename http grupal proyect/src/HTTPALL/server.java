@@ -1,4 +1,4 @@
-package src.HTTPALL;
+package HTTPALL;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;

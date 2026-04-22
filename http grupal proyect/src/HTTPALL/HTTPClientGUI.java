@@ -1,4 +1,4 @@
-package src.HTTPALL;
+package HTTPALL;
 
 import javax.swing.*;
 import java.awt.*;

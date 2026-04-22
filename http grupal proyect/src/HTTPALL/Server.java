@@ -53,6 +53,12 @@ public class Server {
                 body = new String(buf);
             }
 
+            if ("GET".equals(method)) {
+                System.out.println("client requests " + path);
+                sendFile(out, path);
+                return;
+            }
+
             String response = route(method, path, body);
             out.write(response.getBytes());
             out.flush();
@@ -62,6 +68,9 @@ public class Server {
     }
 
     private static String route(String method, String path, String body) {
+        System.out.println(path);
+        
+
         if ("GET".equals(method) && "/cats".equals(path)) {
             String json = "[" + String.join(",", cats.values()) + "]";
             return jsonResponse(200, "OK", json);
@@ -77,12 +86,61 @@ public class Server {
         return jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
     }
 
+    private static void sendFile(OutputStream out, String path){
+        try {
+            String fileName = "Content/";
+            if ("/".equals(path)) {
+                fileName += "index.html";
+            } else if ("/epicmeme".equals(path)) {
+                fileName += "Memes/3.png";
+            } else {
+                fileName += path;
+            }
+            
+            
+            java.nio.file.Path fullPath = java.nio.file.Paths.get(fileName);
+            byte[] fileBytes = java.nio.file.Files.readAllBytes(fullPath);
+            
+            System.out.println("sending file: " + fullPath);
+
+            String contentType = getContentType(fileName);
+
+            String headers =
+                "HTTP/1.1 200 OK\r\n" +
+                "Content-Type: " + contentType + "\r\n" +
+                "Content-Length: " + fileBytes.length + "\r\n" +
+                "Connection: close\r\n" +
+                "\r\n";
+
+            out.write(headers.getBytes());
+            out.write(fileBytes);
+            out.flush();
+        } catch (Exception e) {
+            String errorMessage = jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
+            out.write(errorMessage.getBytes());
+            out.flush();
+        }
+    }
+
+    private static String getContentType(String fileName) {
+        if (fileName.endsWith(".html")) return "text/html";
+        if (fileName.endsWith(".css")) return "text/css";
+        if (fileName.endsWith(".js")) return "application/javascript";
+        if (fileName.endsWith(".png")) return "image/png";
+        if (fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")) return "image/jpeg";
+        if (fileName.endsWith(".ico")) return "image/x-icon";
+        if (fileName.endsWith(".gif")) return "image/gif";        
+        return "application/octet-stream";
+    }
+
     private static String jsonResponse(int code, String reason, String json) {
-        return "HTTP/1.1 " + code + " " + reason + "\r\n"
+        
+        String mssg = "HTTP/1.1 " + code + " " + reason + "\r\n"
              + "Content-Type: application/json\r\n"
              + "Content-Length: " + json.getBytes().length + "\r\n"
              + "Connection: close\r\n"
              + "\r\n"
              + json;
+        return mssg;
     }
 }

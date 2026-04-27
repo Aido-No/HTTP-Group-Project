@@ -53,15 +53,17 @@ public class server {
                 body = new String(buf);
             }
 
-            if ("GET".equals(method)) {
-                System.out.println("client requests " + path);
-                sendFile(out, path);
-                return;
-            }
-
+         
             String response = route(method, path, body);
-            out.write(response.getBytes());
-            out.flush();
+            
+            if (response == null) {
+             
+                sendFile(out, path);
+            } else {
+                out.write(response.getBytes());
+                out.flush();
+            }
+            
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -80,6 +82,8 @@ public class server {
 
     private static String route(String method, String path, String body) {      
 
+
+    	 
         if ("GET".equals(method) && "/cats".equals(path)) {
             String json = "[" + String.join(",", cats.values()) + "]";
             return jsonResponse(200, "OK", json);

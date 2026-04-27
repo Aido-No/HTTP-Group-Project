@@ -73,6 +73,34 @@ public class Server {
             return jsonResponse(200, "OK", json);
         }
 
+        // for (String keys : memes.keySet()) {
+
+        // }
+        // System.out.println("key: " + );
+
+        if ("GET".equals(method) && path.startsWith("/memes/")) {
+        try {
+            // Extract the part after "/memes/"
+            String memeID = path.substring(7); 
+            
+            // Handle cases where user might type /memes/1.json
+            if (memeID.endsWith(".json")) {
+                memeID = memeID.substring(0, memeID.length() - 5);
+            }
+
+            int id = Integer.parseInt(memeID);
+            String meme = memes.get(id);
+
+            if (meme != null) {
+                return jsonResponse(200, "OK", meme);
+            } else {
+                return jsonResponse(404, "Not Found", "{\"error\":\"Meme #" + id + " not found in memory\"}");
+            }
+        } catch (NumberFormatException e) {
+            return jsonResponse(400, "Bad Request", "{\"error\":\"Invalid ID format\"}");
+        }
+    }
+
         if ("POST".equals(method) && "/memes".equals(path)) {
             int id = nextId.getAndIncrement();
             String entry = "{\"id\":" + id + "," + body.substring(1);

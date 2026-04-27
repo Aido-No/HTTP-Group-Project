@@ -67,9 +67,7 @@ public class Server {
         }
     }
 
-    private static String route(String method, String path, String body) {
-        System.out.println(path);
-        
+    private static String route(String method, String path, String body) {      
 
         if ("GET".equals(method) && "/cats".equals(path)) {
             String json = "[" + String.join(",", cats.values()) + "]";
@@ -87,6 +85,7 @@ public class Server {
     }
 
     private static void sendFile(OutputStream out, String path){
+        
         try {
             String fileName = "Content/";
             if ("/".equals(path)) {
@@ -97,8 +96,10 @@ public class Server {
                 fileName += path;
             }
             
+            System.out.println(fileName);
             
             java.nio.file.Path fullPath = java.nio.file.Paths.get(fileName);
+
             byte[] fileBytes = java.nio.file.Files.readAllBytes(fullPath);
             
             System.out.println("sending file: " + fullPath);
@@ -116,9 +117,15 @@ public class Server {
             out.write(fileBytes);
             out.flush();
         } catch (Exception e) {
-            String errorMessage = jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
-            out.write(errorMessage.getBytes());
-            out.flush();
+            e.printStackTrace();
+            try {
+                String errorMessage = jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
+                out.write(errorMessage.getBytes());
+                out.flush();
+                
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
         }
     }
 

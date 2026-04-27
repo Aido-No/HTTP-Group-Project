@@ -1,4 +1,4 @@
-package src.HTTPALL;
+package HTTPALL;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class Server {
+public class server {
 
     private static final Map<Integer, String> cats = new ConcurrentHashMap<>();
     private static final AtomicInteger nextId = new AtomicInteger(1);

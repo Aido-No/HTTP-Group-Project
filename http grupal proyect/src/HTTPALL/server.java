@@ -92,14 +92,41 @@ public class server {
 
         if ("GET".equals(method) && path.startsWith("/cats/") && !"/cats".equals(path)) {
             int id = getIdFromPath(path);
-            if (id == -1) {
-                return jsonResponse(400, "Bad Request", "{\"error\":\"Invalid ID\"}");
-            }
             String cat = cats.get(id);
             if (cat == null) {
                 return jsonResponse(404, "Not Found", "{\"error\":\"Cat not found\"}");
             }
             return jsonResponse(200, "OK", cat);
+        }
+        
+     
+        if ("PUT".equals(method) && path.startsWith("/cats/") && !"/cats".equals(path)) {
+            int id = getIdFromPath(path);
+
+            if (!cats.containsKey(id)) {
+                return jsonResponse(404, "Not Found", "{\"error\":\"Cat not found\"}");
+            }
+            if (body == null || body.isEmpty()) {
+                return jsonResponse(400, "Bad Request", "{\"error\":\"Body required\"}");
+            }
+            String entry = "{\"id\":" + id + "," + body.substring(1);
+            cats.put(id, entry);
+            return jsonResponse(200, "OK", entry);
+        }
+        
+
+        if ("DELETE".equals(method) && path.startsWith("/cats/") && !"/cats".equals(path)) {
+            int id = getIdFromPath(path);
+
+            if (!cats.containsKey(id)) {
+                return jsonResponse(404, "Not Found", "{\"error\":\"Cat not found\"}");
+            }
+            cats.remove(id);
+
+            return "HTTP/1.1 204 No Content\r\n" +
+                   "Content-Length: 0\r\n" +
+                   "Connection: close\r\n" +
+                   "\r\n";
         }
 
         if ("POST".equals(method) && "/cats".equals(path)) {

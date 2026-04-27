@@ -66,12 +66,36 @@ public class server {
             e.printStackTrace();
         }
     }
+    
+    private static int getIdFromPath(String path) {
+        if (path.startsWith("/cats/") && path.length() > 6) {
+            try {
+                return Integer.parseInt(path.substring(6));
+            } catch (NumberFormatException e) {
+                return -1;
+            }
+        }
+        return -1;
+    }
 
     private static String route(String method, String path, String body) {      
 
         if ("GET".equals(method) && "/cats".equals(path)) {
             String json = "[" + String.join(",", cats.values()) + "]";
             return jsonResponse(200, "OK", json);
+        }
+        
+
+        if ("GET".equals(method) && path.startsWith("/cats/") && !"/cats".equals(path)) {
+            int id = getIdFromPath(path);
+            if (id == -1) {
+                return jsonResponse(400, "Bad Request", "{\"error\":\"Invalid ID\"}");
+            }
+            String cat = cats.get(id);
+            if (cat == null) {
+                return jsonResponse(404, "Not Found", "{\"error\":\"Cat not found\"}");
+            }
+            return jsonResponse(200, "OK", cat);
         }
 
         if ("POST".equals(method) && "/cats".equals(path)) {

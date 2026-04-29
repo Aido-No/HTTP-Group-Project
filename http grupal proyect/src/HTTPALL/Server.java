@@ -2,10 +2,13 @@ package src.HTTPALL;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -16,8 +19,9 @@ public class Server {
 
     private static Map<Integer, String> memes = new ConcurrentHashMap<>();
     private static final AtomicInteger nextId = new AtomicInteger(1);
-    private static final String memesFolder = "Content/Memes";
-    private static final String htmlEndPoint = "Content/index.html";
+    private static final String contentFolder = "http grupal proyect/src/HTTPALL/Content";
+    private static final String memesFolder = "http grupal proyect/src/HTTPALL/Content/Memes";
+    private static final String htmlEndPoint = "http grupal proyect/src/HTTPALL/Content/index.html";
 
     public static void main(String[] args) throws Exception {
         setUpHashMap();
@@ -34,7 +38,7 @@ public class Server {
 
     private static void setUpHashMap(){
         File folder = new File(memesFolder);
-
+        System.out.println(folder.getAbsolutePath());
         if (!folder.exists() || !folder.isDirectory()) {
             System.out.println("Invalid folder path: " + memesFolder);
             return;
@@ -97,10 +101,7 @@ public class Server {
 
         //POST REQUESTS
         if ("POST".equals(method) && "/memes".equals(path)) {
-            int id = nextId.getAndIncrement();
-            String entry = "{\"id\":" + id + "," + body.substring(1);
-            memes.put(id, entry);
-            return jsonResponse(201, "Created", entry);
+            return handlePostRequest(path, body);
         }
 
         return jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
@@ -111,10 +112,10 @@ public class Server {
             case "":
             case "/" :
                 return getStatichtml();
-            case "/resource": 
+            case "/memes": 
                 return getAllResources();
         default:
-            if (path.matches("/resource/[^/]+")) {
+            if (path.matches("/memes/[^/]+")) {
                 int id = Integer.parseInt(path.split("/")[2]);
                 return getResourceById(id);
             }
@@ -123,6 +124,22 @@ public class Server {
             }
             return jsonResponse(400, "Bad Request");
         }
+    }
+
+    private static byte[] handlePostRequest(String path, String body) {
+        int memeCount = memes.size() + 1;
+        String fileName = "meme" + memeCount + ".json";
+        String filePath = memesFolder + "/" + fileName;
+
+        memes.put(memeCount, filePath);
+
+        try (FileWriter writer = new FileWriter(filePath)) {
+            writer.write(body);
+        } catch (IOException e) {
+            return jsonResponse(500, "Internal Server Error");
+        }
+
+        return jsonResponse(201, "Created");
     }
 
     private static byte[] getAllResources() {
@@ -160,7 +177,7 @@ public class Server {
 
     private static byte[] gethtmlResource(String fileName){
         try {            
-            java.nio.file.Path fullPath = java.nio.file.Paths.get("Content"+fileName);
+            java.nio.file.Path fullPath = java.nio.file.Paths.get(contentFolder + "/" +fileName);
             if (java.nio.file.Files.exists(fullPath)){
                 byte[] fileBytes = java.nio.file.Files.readAllBytes(fullPath);
                 String contentType = getContentType(fileName);
@@ -217,5 +234,25 @@ public class Server {
 
     private static byte[] fileResponse(int code, String reason, byte[] fileBytes, String contentType) {
         return buildResponse(code, reason, contentType, fileBytes);
+    }
+
+    private static String extractJsonValue(String body, String key) {
+        String search = "\"" + key + "\"";
+        int keyIndex = body.indexOf(search);
+        if (keyIndex == -1) return null;
+
+        int colonIndex = body.indexOf(":", keyIndex);
+        int valueStart = colonIndex + 1;
+
+        while (valueStart < body.length() && body.charAt(valueStart) == ' ') valueStart++;
+
+        if (body.charAt(valueStart) == '"') {
+            int end = body.indexOf("\"", valueStart + 1);
+            return body.substring(valueStart + 1, end);
+        }
+
+        int end = valueStart;
+        while (end < body.length() && "0123456789".indexOf(body.charAt(end)) >= 0) end++;
+        return body.substring(valueStart, end);
     }
 }

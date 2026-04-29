@@ -1,26 +1,52 @@
-package src.HTTPALL;
+package HTTPALL;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class Server {
 
-    private static final Map<Integer, String> memes = new ConcurrentHashMap<>();
+    private static Map<Integer, String> memes = new ConcurrentHashMap<>();
     private static final AtomicInteger nextId = new AtomicInteger(1);
-
+    private static final String memesFolder = "http grupal proyect/src/HTTPALL/Content/Memes";
+    private static final String htmlEndPoint = "http grupal proyect/src/HTTPALL/Content/index.html";
     public static void main(String[] args) throws Exception {
+        setUpHashMap();
+        
         int port = 3000;
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             System.out.println("Server listening on port " + port);
             while (true) {
                 Socket socket = serverSocket.accept();
                 new Thread(() -> handleConnection(socket)).start();
+            }
+        }
+    }
+
+    private static void setUpHashMap(){
+        File folder = new File(memesFolder);
+
+        if (!folder.exists() || !folder.isDirectory()) {
+            System.out.println("Invalid folder path: " + memesFolder);
+            return;
+        }
+
+        File[] files = folder.listFiles();
+        if (files == null) return;
+
+        int id = 0;
+        for (File file : files) {
+            if (file.isFile() && file.getName().endsWith(".json")) {
+                memes.put(id, file.getPath());
+                id++;
             }
         }
     }
@@ -53,54 +79,22 @@ public class Server {
                 body = new String(buf);
             }
 
-            if ("GET".equals(method)) {
-                System.out.println("client requests " + path);
-                sendFile(out, path);
-                return;
-            }
-
-            String response = route(method, path, body);
-            out.write(response.getBytes());
+            byte[] response = route(method, path, body);
+            out.write(response);
             out.flush();
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private static String route(String method, String path, String body) {
-        if ("GET".equals(method) && "/memes".equals(path)) {    // GET that handles GET /memes
-            String json = "[" + String.join(",", memes.values()) + "]";
-            return jsonResponse(200, "OK", json);
+    private static byte[] route(String method, String path, String body) {
+        //GET REQUESTS
+        if ("GET".equals(method)) { 
+            System.out.println(path);
+            return handleGetRequest(path, body);
         }
 
-        // for (String keys : memes.keySet()) {
-
-        // }
-        // System.out.println("key: " + );
-
-        if ("GET".equals(method) && path.startsWith("/memes/")) {
-        try {
-            // Extract the part after "/memes/"
-            String memeID = path.substring(7); 
-            
-            // Handle cases where user might type /memes/1.json
-            if (memeID.endsWith(".json")) {
-                memeID = memeID.substring(0, memeID.length() - 5);
-            }
-
-            int id = Integer.parseInt(memeID);
-            String meme = memes.get(id);
-
-            if (meme != null) {
-                return jsonResponse(200, "OK", meme);
-            } else {
-                return jsonResponse(404, "Not Found", "{\"error\":\"Meme #" + id + " not found in memory\"}");
-            }
-        } catch (NumberFormatException e) {
-            return jsonResponse(400, "Bad Request", "{\"error\":\"Invalid ID format\"}");
-        }
-    }
-
+        //POST REQUESTS
         if ("POST".equals(method) && "/memes".equals(path)) {
             int id = nextId.getAndIncrement();
             String entry = "{\"id\":" + id + "," + body.substring(1);
@@ -111,50 +105,75 @@ public class Server {
         return jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
     }
 
-    private static void sendFile(OutputStream out, String path){
-        
-        try {
-            String fileName = "Content/";
-            if ("/".equals(path)) {
-                fileName += "index.html";
-            } else if ("/epicmeme".equals(path)) {
-                fileName += "Memes/3.png";
-            } else {
-                fileName += path;
+    
+
+    private static byte[] handleGetRequest(String path, String body) {
+        switch (path) {
+            case "":
+            case "/" :
+                return getStatichtml();
+            case "/resource": 
+                return getAllResources();
+        default:
+            if (path.matches("/resource/[^/]+")) {
+                int id = Integer.parseInt(path.split("/")[2]);
+                return getResourceById(id);
             }
-            
-            System.out.println(fileName);
-            
-            java.nio.file.Path fullPath = java.nio.file.Paths.get(fileName);
+            if (path.startsWith("/Resources/")) {
+                return gethtmlResource(path);
+            }
+            return jsonResponse(400, "Bad Request");
+        }
+    }
+
+    private static byte[] getAllResources() {
+        String json = "[" + String.join(",", memes.values()) + "]";
+        return jsonResponse(200, "OK", json);
+    }
+
+    private static byte[] getResourceById(int id) {
+        if (memes.containsKey(id)){
+            try {
+                String memePath = memes.get(id);
+                String meme = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(memePath)));
+                return jsonResponse(200, "OK", meme);
+            } catch (Exception e) {
+                return jsonResponse(500, "Internal Server Error");
+            }
+        } else {
+            return jsonResponse(404, "Not found");
+        }
+    }
+
+    private static byte[] getStatichtml(){
+        try {            
+            java.nio.file.Path fullPath = java.nio.file.Paths.get(htmlEndPoint);
 
             byte[] fileBytes = java.nio.file.Files.readAllBytes(fullPath);
             
-            System.out.println("sending file: " + fullPath);
+            String contentType = getContentType(htmlEndPoint);
 
-            String contentType = getContentType(fileName);
-
-            String headers =
-                "HTTP/1.1 200 OK\r\n" +
-                "Content-Type: " + contentType + "\r\n" +
-                "Content-Length: " + fileBytes.length + "\r\n" +
-                "Connection: close\r\n" +
-                "\r\n";
-
-            out.write(headers.getBytes());
-            out.write(fileBytes);
-            out.flush();
+            return fileResponse(200, "OK", fileBytes, contentType);
         } catch (Exception e) {
-            e.printStackTrace();
-            try {
-                String errorMessage = jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
-                out.write(errorMessage.getBytes());
-                out.flush();
-                
-            } catch (Exception ex) {
-                ex.printStackTrace();
-            }
+            return jsonResponse(500, "Internal server error");
         }
     }
+
+    private static byte[] gethtmlResource(String fileName){
+        try {            
+            java.nio.file.Path fullPath = java.nio.file.Paths.get("src/HTTPALL/Content"+fileName);
+            if (java.nio.file.Files.exists(fullPath)){
+                byte[] fileBytes = java.nio.file.Files.readAllBytes(fullPath);
+                String contentType = getContentType(fileName);
+                
+                return fileResponse(200, "OK", fileBytes, contentType);
+            }
+            return jsonResponse(404, "resource not found");
+        } catch (Exception e) {
+            return jsonResponse(500, "Internal server error");
+        }
+    }
+
 
     private static String getContentType(String fileName) {
         if (fileName.endsWith(".html")) return "text/html";
@@ -167,14 +186,37 @@ public class Server {
         return "application/octet-stream";
     }
 
-    private static String jsonResponse(int code, String reason, String json) {
-        
-        String mssg = "HTTP/1.1 " + code + " " + reason + "\r\n"
-             + "Content-Type: application/json\r\n"
-             + "Content-Length: " + json.getBytes().length + "\r\n"
-             + "Connection: close\r\n"
-             + "\r\n"
-             + json;
-        return mssg;
+    private static byte[] buildResponse(int code, String reason, String contentType, byte[]... bodies) {
+        int totalLength = 0;
+        for (byte[] b : bodies) totalLength += b.length;
+
+        String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
+            + "Content-Type: " + contentType + "\r\n"
+            + "Content-Length: " + totalLength + "\r\n"
+            + "Connection: close\r\n"
+            + "\r\n";
+
+        byte[] headerBytes = headers.getBytes();
+        byte[] combined = new byte[headerBytes.length + totalLength];
+        int pos = 0;
+        System.arraycopy(headerBytes, 0, combined, pos, headerBytes.length);
+        pos += headerBytes.length;
+        for (byte[] b : bodies) {
+            System.arraycopy(b, 0, combined, pos, b.length);
+            pos += b.length;
+        }
+        return combined;
+    }
+
+    private static byte[] jsonResponse(int code, String reason, String json) {
+    return buildResponse(code, reason, "application/json", json.getBytes());
+    }
+
+    private static byte[] jsonResponse(int code, String reason) {
+        return jsonResponse(code, reason, "{}");
+    }
+
+    private static byte[] fileResponse(int code, String reason, byte[] fileBytes, String contentType) {
+        return buildResponse(code, reason, contentType, fileBytes);
     }
 }

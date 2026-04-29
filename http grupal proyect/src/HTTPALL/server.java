@@ -105,7 +105,7 @@ public class Server {
         return jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
     }
 
-    
+
 
     private static byte[] handleGetRequest(String path, String body) {
         switch (path) {
@@ -161,7 +161,7 @@ public class Server {
 
     private static byte[] gethtmlResource(String fileName){
         try {            
-            java.nio.file.Path fullPath = java.nio.file.Paths.get("src/HTTPALL/Content"+fileName);
+            java.nio.file.Path fullPath = java.nio.file.Paths.get("http grupal proyect/src/HTTPALL/Content"+fileName);
             if (java.nio.file.Files.exists(fullPath)){
                 byte[] fileBytes = java.nio.file.Files.readAllBytes(fullPath);
                 String contentType = getContentType(fileName);

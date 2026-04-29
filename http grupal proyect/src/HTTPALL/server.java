@@ -6,6 +6,8 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -102,10 +104,23 @@ public class Server {
             return jsonResponse(201, "Created", entry);
         }
 
+        if ("DELETE".equals(method)) {
+            System.out.println(path);
+            return handleDeleteRequest(path, body);
+        }
+
         return jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
     }
 
+    private static byte[] handleDeleteRequest(String path, String body) {
+            if (path.matches("/resource/[^/]+")) {
+                int id = Integer.parseInt(path.split("/")[2]);
 
+                return deleteResourceById(id);
+            }
+            return jsonResponse(400, "Bad Request");
+
+    }
 
     private static byte[] handleGetRequest(String path, String body) {
         switch (path) {
@@ -129,6 +144,22 @@ public class Server {
     private static byte[] getAllResources() {
         String json = "[" + String.join(",", memes.values()) + "]";
         return jsonResponse(200, "OK", json);
+    }
+
+    private static byte[] deleteResourceById(int id) {
+        if (memes.containsKey(id)) {
+            try {
+                String memePath = memes.get(id);
+                Files.deleteIfExists(Paths.get(memePath));
+                memes.remove(id);
+                return jsonResponse(404, "Not found");
+            } catch (Exception e) {
+                return jsonResponse(500, "Internal Server Error");
+            }
+           
+        } else {
+            return jsonResponse(404, "Not found");
+        }
     }
 
     private static byte[] getResourceById(int id) {

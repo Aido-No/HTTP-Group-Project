@@ -152,7 +152,7 @@ public class Server {
                 String memePath = memes.get(id);
                 Files.deleteIfExists(Paths.get(memePath));
                 memes.remove(id);
-                return jsonResponse(404, "Not found");
+                return jsonResponse(200, "OK");
             } catch (Exception e) {
                 return jsonResponse(500, "Internal Server Error");
             }

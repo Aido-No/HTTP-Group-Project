@@ -8,8 +8,6 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -109,6 +107,11 @@ public class Server {
             int id = Integer.parseInt(path.split("/")[2]);
             if (memes.containsKey(id)) {
                 String entry = "{\"id\":" + id + "," + body.substring(1);
+                //If the body is empty
+                if (entry.equals("{\"id\":" + id + ",")) 
+                {
+                    return jsonResponse(400, "Bad Request", "{\"error\":\"Empty body\"}");
+                }
                 memes.replace(id, entry);
                 return jsonResponse(200, "OK", entry);
             } else {

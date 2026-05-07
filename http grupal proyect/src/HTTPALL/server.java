@@ -8,6 +8,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -106,14 +107,7 @@ public class Server {
         if ("PUT".equals(method) && path.matches("/memes/[^/]+")) {
             int id = Integer.parseInt(path.split("/")[2]);
             if (memes.containsKey(id)) {
-                String entry = "{\"id\":" + id + "," + body.substring(1);
-                //If the body is empty
-                if (entry.equals("{\"id\":" + id + ",")) 
-                {
-                    return jsonResponse(400, "Bad Request", "{\"error\":\"Empty body\"}");
-                }
-                memes.replace(id, entry);
-                return jsonResponse(200, "OK", entry);
+                return handlePutRequest(id, body);
             } else {
                 return jsonResponse(404, "Not Found");
             }
@@ -159,6 +153,20 @@ public class Server {
     private static byte[] getAllResources() {
         String json = "[" + String.join(",", memes.values()) + "]";
         return jsonResponse(200, "OK", json);
+    }
+
+    private static byte[] handlePutRequest(int id, String body) {
+            String entry = body.substring(1);
+            if (entry.isBlank()) {
+                return jsonResponse(400, "Bad Request", "{\"error\":\"Empty body\"}");
+            }
+            String memepath = memes.get(id);
+            try {
+                Files.write(Paths.get(memepath), entry.getBytes(), StandardOpenOption.TRUNCATE_EXISTING);
+            } catch (Exception e) {
+                return jsonResponse(500, "Internal Server Error");
+            }
+            return jsonResponse(200, "OK", entry);
     }
 
     private static byte[] deleteResourceById(int id) {

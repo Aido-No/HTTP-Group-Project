@@ -104,6 +104,18 @@ public class Server {
             return jsonResponse(201, "Created", entry);
         }
 
+        //PUT REQUESTS
+        if ("PUT".equals(method) && path.matches("/memes/[^/]+")) {
+            int id = Integer.parseInt(path.split("/")[2]);
+            if (memes.containsKey(id)) {
+                String entry = "{\"id\":" + id + "," + body.substring(1);
+                memes.replace(id, entry);
+                return jsonResponse(200, "OK", entry);
+            } else {
+                return jsonResponse(404, "Not Found");
+            }
+        }
+
         if ("DELETE".equals(method)) {
             System.out.println(path);
             return handleDeleteRequest(path, body);

@@ -7,14 +7,17 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class Server {
 
+	private static String API_KEY = null;
     private static Map<Integer, String> memes = new ConcurrentHashMap<>();
     private static final AtomicInteger nextId = new AtomicInteger(1);
     private static final String memesFolder = "http grupal proyect/src/HTTPALL/Content/Memes";
@@ -50,6 +53,23 @@ public class Server {
                 id++;
             }
         }
+        loadApiKey();
+    }
+    
+    private static void loadApiKey() {
+        try {
+            Path keyPath = Paths.get("api.key");
+            API_KEY = Files.readString(keyPath).trim();
+        } catch (Exception e) {
+            System.out.println("No API key found, authentication disabled");
+            API_KEY = null;
+        }
+    }
+    
+    private static boolean isAuthenticated(Map<String, String> headers) {
+        if (API_KEY == null) return true;
+        String clientKey = headers.get("x-api-key");
+        return clientKey != null && clientKey.equals(API_KEY);
     }
 
     private static void handleConnection(Socket socket) {
@@ -62,16 +82,26 @@ public class Server {
             String[] parts = requestLine.split(" ");
             String method = parts[0];
             String path = parts[1];
-
-            StringBuilder headers = new StringBuilder();
+            
+            //Edited for API Key Authentication
+            Map<String, String> headerMap = new HashMap<>();
             String line;
             int contentLength = 0;
+            
             while (!(line = in.readLine()).isEmpty()) {
-                headers.append(line).append("\r\n");
-                if (line.toLowerCase().startsWith("content-length:")) {
-                    contentLength = Integer.parseInt(line.substring(15).trim());
+                int colonIndex = line.indexOf(':');
+                if (colonIndex > 0) {
+                    String key = line.substring(0, colonIndex).toLowerCase().trim();
+                    String value = line.substring(colonIndex + 1).trim();
+                    headerMap.put(key, value);
+                    
+                    // Extract content-length while we're here
+                    if (key.equals("content-length")) {
+                        contentLength = Integer.parseInt(value);
+                    }
                 }
             }
+            //Finished Editing for API Authentication 
 
             String body = "";
             if (contentLength > 0) {
@@ -80,7 +110,7 @@ public class Server {
                 body = new String(buf);
             }
 
-            byte[] response = route(method, path, body);
+            byte[] response = route(method, path, body, headerMap);
             out.write(response);
             out.flush();
         } catch (Exception e) {
@@ -88,7 +118,10 @@ public class Server {
         }
     }
 
-    private static byte[] route(String method, String path, String body) {
+    private static byte[] route(String method, String path, String body, Map<String, String> headers) {
+        if (!isAuthenticated(headers)) {
+            return jsonResponse(401, "Unauthorized", "{\"error\":\"Valid API key required\"}");
+        }
         //GET REQUESTS
         if ("GET".equals(method)) { 
             System.out.println(path);

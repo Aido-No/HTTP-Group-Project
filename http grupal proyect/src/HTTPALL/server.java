@@ -14,20 +14,30 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.*;
+import java.io.FileWriter;
+import java.io.PrintWriter;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
-public class Server {
+public class server {
 
+	private static final Logger logger = Logger.getLogger("HTTPServer");
+	private static PrintWriter logWriter;
 	private static String API_KEY = null;
+	//No Extra Code
     private static Map<Integer, String> memes = new ConcurrentHashMap<>();
     private static final AtomicInteger nextId = new AtomicInteger(1);
-    private static final String memesFolder = "http grupal proyect/src/HTTPALL/Content/Memes";
-    private static final String htmlEndPoint = "http grupal proyect/src/HTTPALL/Content/index.html";
+    private static final String memesFolder = "src/HTTPALL/Content/Memes";
+    private static final String htmlEndPoint = "src/HTTPALL/Content/index.html";
     public static void main(String[] args) throws Exception {
         setUpHashMap();
+        initLoging();
         
         int port = 3000;
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             System.out.println("Server listening on port " + port);
+            log("INFO", "Server started on port " + port);
             while (true) {
                 Socket socket = serverSocket.accept();
                 new Thread(() -> handleConnection(socket)).start();
@@ -71,6 +81,24 @@ public class Server {
         String clientKey = headers.get("x-api-key");
         return clientKey != null && clientKey.equals(API_KEY);
     }
+    
+    private static void initLoging() {
+        try {
+            FileWriter fw = new FileWriter("server.log", true);
+            logWriter = new PrintWriter(fw, true);
+            logger.setUseParentHandlers(false); // Disable console logging from Logger
+        } catch (Exception e) {
+            System.err.println("Failed to initialize log file");
+        }
+    }
+    
+    private static void log(String level, String message) {
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        String logEntry = String.format("[%s] [%s] %s", timestamp, level, message);
+        if (logWriter != null) {
+            logWriter.println(logEntry);
+        }
+    }
 
     private static void handleConnection(Socket socket) {
         try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
@@ -109,7 +137,7 @@ public class Server {
                 in.read(buf, 0, contentLength);
                 body = new String(buf);
             }
-
+            log("INFO", String.format("Request | %s %s", method, path));
             byte[] response = route(method, path, body, headerMap);
             out.write(response);
             out.flush();
@@ -240,7 +268,8 @@ public class Server {
             
             String contentType = getContentType(htmlEndPoint);
 
-            return fileResponse(200, "OK", fileBytes, contentType);
+            //return fileResponse(200, "OK", fileBytes, contentType);
+            return buildResponse(200,"OK",contentType,fileBytes);
         } catch (Exception e) {
             return jsonResponse(500, "Internal server error");
         }
@@ -253,7 +282,8 @@ public class Server {
                 byte[] fileBytes = java.nio.file.Files.readAllBytes(fullPath);
                 String contentType = getContentType(fileName);
                 
-                return fileResponse(200, "OK", fileBytes, contentType);
+                //return fileResponse(200, "OK", fileBytes, contentType);
+                return buildResponse(200,"OK",contentType,fileBytes);
             }
             return jsonResponse(404, "resource not found");
         } catch (Exception e) {
@@ -303,7 +333,7 @@ public class Server {
         return jsonResponse(code, reason, "{}");
     }
 
-    private static byte[] fileResponse(int code, String reason, byte[] fileBytes, String contentType) {
+    /*private static byte[] fileResponse(int code, String reason, byte[] fileBytes, String contentType) {
         return buildResponse(code, reason, contentType, fileBytes);
-    }
+    }*/
 }

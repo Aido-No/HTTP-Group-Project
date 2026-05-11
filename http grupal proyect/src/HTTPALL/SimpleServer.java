@@ -8,7 +8,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 
 public class SimpleServer {
-
+/* This is not Used in the Final Version
     public static void main(String[] args) {
         int port = 3000;
         
@@ -47,4 +47,5 @@ public class SimpleServer {
             e.printStackTrace();
         }
     }
+    */
 }

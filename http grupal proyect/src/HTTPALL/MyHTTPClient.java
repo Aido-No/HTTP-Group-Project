@@ -5,6 +5,7 @@ import java.net.URL;
 import java.util.*;
 
 public class MyHTTPClient {
+	/* This will not be used in the final version
     private static Scanner scanner = new Scanner(System.in);
     private static Map<String, CookieData> cookies = new HashMap<>();
     
@@ -164,7 +165,7 @@ public class MyHTTPClient {
             requestBuilder.append(req.method).append(" ").append(path).append(" HTTP/1.1\r\n");
             requestBuilder.append("Host: ").append(host).append("\r\n");
             requestBuilder.append("User-Agent: MyHTTPClient/1.0\r\n");
-            requestBuilder.append("Accept: */*\r\n");
+            requestBuilder.append("Accept: r\n");
             
             cookies.entrySet().removeIf(entry -> entry.getValue().isExpired());
             if (!cookies.isEmpty()) {
@@ -274,4 +275,5 @@ public class MyHTTPClient {
             this.customHeaders = customHeaders;
         }
     }
+    */
 }

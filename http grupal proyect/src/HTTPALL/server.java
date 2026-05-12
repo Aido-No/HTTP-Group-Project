@@ -25,6 +25,7 @@ public class server {
     private static final Logger logger = Logger.getLogger("HTTPServer");
     private static PrintWriter logWriter;
     private static String API_KEY = null;
+    private static Map<Integer, String> etags = new ConcurrentHashMap<>();
 
     private static Map<Integer, String> memes = new ConcurrentHashMap<>();
     private static final AtomicInteger nextId = new AtomicInteger(1);
@@ -167,13 +168,15 @@ public class server {
         }
 
         if ("GET".equals(method)) {
-            return handleGetRequest(path, body);
+            return handleGetRequest(path, body, headers);
         }
 
         if ("POST".equals(method) && "/memes".equals(path)) {
             int id = nextId.getAndIncrement();
             String entry = "{\"id\":" + id + "," + body.substring(1);
             memes.put(id, entry);
+            String etag = Integer.toHexString(entry.hashCode());
+            etags.put(id, etag);
             return jsonResponseWithCookie(201, "Created", entry);
         }
 
@@ -196,7 +199,7 @@ public class server {
 
 
 
-    private static byte[] handleGetRequest(String path, String body) {
+    private static byte[] handleGetRequest(String path, String body, Map<String,String> headers) {
         if (path.equals("/") || path.isEmpty()) {
             return getStatichtml();
         }
@@ -207,7 +210,7 @@ public class server {
 
         if (path.matches("/resource/[^/]+")) {
             int id = Integer.parseInt(path.split("/")[2]);
-            return getResourceById(id);
+            return getResourceById(id, headers);
         }
 
         if (path.startsWith("/Resources/")) {
@@ -235,8 +238,11 @@ public class server {
         } catch (Exception e) {
             return jsonResponse(500, "Internal Server Error");
         }
-
-        return jsonResponse(200, "OK", entry);
+        String newETag = Integer.toHexString(entry.hashCode());
+        etags.put(id, newETag);
+        
+        return jsonResponseWithETag(200, "OK", entry, newETag);
+        //return jsonResponse(200, "OK", entry);
     }
 
     private static byte[] handleDeleteRequest(String path, String body) {
@@ -260,6 +266,7 @@ public class server {
                 String memePath = memes.get(id);
                 Files.deleteIfExists(Paths.get(memePath));
                 memes.remove(id);
+                etags.remove(id); 
                 return jsonResponse(200, "OK");
             } catch (Exception e) {
                 return jsonResponse(500, "Internal Server Error");
@@ -268,12 +275,26 @@ public class server {
         return jsonResponse(404, "Not found");
     }
 
-    private static byte[] getResourceById(int id) {
+    private static byte[] getResourceById(int id, Map<String, String> headers) {
         if (memes.containsKey(id)) {
             try {
                 String memePath = memes.get(id);
                 String meme = new String(Files.readAllBytes(Paths.get(memePath)));
-                return jsonResponse(200, "OK", meme);
+                String currentETag = etags.get(id);
+                if (currentETag == null) {
+                    currentETag = Integer.toHexString(meme.hashCode());
+                    etags.put(id, currentETag);
+                }
+                String clientETag = headers.get("if-none-match");
+                if (clientETag != null && clientETag.startsWith("\"") && clientETag.endsWith("\"")) {
+                    clientETag = clientETag.substring(1, clientETag.length() - 1);
+                }
+                System.out.println("Comparing client ETag: '" + clientETag + "' vs server: '" + currentETag + "'");
+                if (clientETag != null && clientETag.equals(currentETag)) {
+                    return jsonResponse(304, "Not Modified"); 
+                }
+                return jsonResponseWithETag(200, "OK", meme, currentETag);
+                //return jsonResponse(200, "OK", meme);
             } catch (Exception e) {
                 return jsonResponse(500, "Internal Server Error");
             }
@@ -351,7 +372,8 @@ public class server {
     }
 
     private static byte[] jsonResponse(int code, String reason) {
-        return jsonResponse(code, reason, "{}");
+        //return jsonResponse(code, reason, "{}");
+        return jsonResponse(code, reason, "");
     }
 
     private static byte[] jsonResponseWithCookie(int code, String reason, String json) {
@@ -371,4 +393,23 @@ public class server {
         
         return combined;
     }
+    
+    private static byte[] jsonResponseWithETag(int code, String reason, String json, String etag) {
+        String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
+            + "Content-Type: application/json\r\n"
+            + "Content-Length: " + json.getBytes().length + "\r\n"
+            + "ETag: \"" + etag + "\"\r\n"  // ETag header
+            + "Cache-Control: private, max-age=3600\r\n"  // Optional: cache for 1 hour
+            + "Connection: close\r\n\r\n";
+        
+        byte[] headerBytes = headers.getBytes();
+        byte[] jsonBytes = json.getBytes();
+        byte[] combined = new byte[headerBytes.length + jsonBytes.length];
+        
+        System.arraycopy(headerBytes, 0, combined, 0, headerBytes.length);
+        System.arraycopy(jsonBytes, 0, combined, headerBytes.length, jsonBytes.length);
+        
+        return combined;
+    }
+    
 }

@@ -17,6 +17,17 @@ public class HTTPClientGUI extends JFrame {
     private JButton sendButton;
     private JTextArea headersArea;
     private static Map<String, CookieData> cookies = new HashMap<>();
+    private static Map<String, CacheEntry> cache = new HashMap<>();
+    
+    static class CacheEntry {
+        String etag;
+        String body;
+        
+        CacheEntry(String etag, String body) {
+        	this.etag = etag;
+        	this.body = body;
+        }
+    }
     
     static class CookieData {
         String value;
@@ -228,6 +239,12 @@ public class HTTPClientGUI extends JFrame {
             }
         }
         
+        CacheEntry cached = cache.get(urlStr);
+        
+        if (cached != null) {
+        	requestBuilder.append("If-None-Match: \"").append(cached.etag).append("\"\r\n");
+        }
+        
         if (body != null && !body.isEmpty()) {
             requestBuilder.append("Content-Length: ").append(body.getBytes().length).append("\r\n");
         }
@@ -265,6 +282,47 @@ public class HTTPClientGUI extends JFrame {
             
             storeCookies(response, path);
             
+            if(response.contains("304 Not Modified"))
+            {
+            	CacheEntry cachedresponse = cache.get(urlStr);
+                if (cachedresponse != null) {
+                    String cachedBody = cachedresponse.body;
+                    SwingUtilities.invokeLater(() -> {
+                        responseArea.append("RESPONSE\n");
+                        responseArea.append("HTTP/1.1 304 Not Modified\n\n");
+                        responseArea.append("Resource not changed - USING CACHED VERSION\n");
+                        responseArea.append(cachedBody);
+                        responseArea.append("\n\n");
+                        responseArea.append("(Retrieved from cache - no network transfer for body)\n\n");
+                        responseArea.append("Active cookies: " + cookies.size() + "\n\n");
+                    }); 
+                }
+                return; 
+            }
+            
+            if (response.contains("200 OK") && "GET".equals(method))
+            {
+            	String etag = null;
+            	String[] lines = response.split("\r\n");
+            	for (String line : lines) {
+            	    if (line.toLowerCase().startsWith("etag:")) {
+            	        etag = line.substring(5).trim();
+            	        if (etag.startsWith("\"") && etag.endsWith("\"")) {
+            	            etag = etag.substring(1, etag.length() - 1);
+            	        }
+            	        break;
+            	    }
+            	}
+            	String responseBody = null;
+            	int bodyStart = response.indexOf("\r\n\r\n");
+            	if (bodyStart != -1) {
+            	    responseBody = response.substring(bodyStart + 4);
+            	}
+                if (etag != null && responseBody != null) {
+                    cache.put(urlStr, new CacheEntry(etag, responseBody));
+                }
+            } 
+            
             SwingUtilities.invokeLater(() -> {
                 responseArea.append("RESPONSE\n");
                 responseArea.append(response);
@@ -279,6 +337,8 @@ public class HTTPClientGUI extends JFrame {
             throw e;
         }
     }
+    
+    
     
     private static void storeCookies(String response, String currentPath) {
         String[] lines = response.split("\r\n");

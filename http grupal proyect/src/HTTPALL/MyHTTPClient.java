@@ -4,24 +4,8 @@ import java.net.Socket;
 import java.net.URL;
 import java.util.*;
 
-public class MyHTTPClient {
-	/* This will not be used in the final version
+public class MyHTTPClient { // This does the same that HTTPSClientGUI does but without intreface
     private static Scanner scanner = new Scanner(System.in);
-    private static Map<String, CookieData> cookies = new HashMap<>();
-    
-    static class CookieData {
-        String value;
-        long expiresAt;
-        
-        CookieData(String value, long expiresAt) {
-            this.value = value;
-            this.expiresAt = expiresAt;
-        }
-        
-        boolean isExpired() {
-            return System.currentTimeMillis() > expiresAt;
-        }
-    }
     
     public static void main(String[] args) {
         System.out.println("=== HTTP Client (HTTP/1.1) ===");
@@ -42,21 +26,9 @@ public class MyHTTPClient {
                     continue;
                 }
                 
-                if (input.equalsIgnoreCase("cookies")) {
-                    cookies.entrySet().removeIf(entry -> entry.getValue().isExpired());
-                    if (cookies.isEmpty()) {
-                        System.out.println("No cookies stored");
-                    } else {
-                        System.out.println("\nStored Cookies:");
-                        for (Map.Entry<String, CookieData> entry : cookies.entrySet()) {
-                            System.out.println("  " + entry.getKey() + " = " + entry.getValue().value);
-                        }
-                    }
-                    continue;
-                }
-                
                 if (input.isEmpty()) continue;
                 
+                // Parse command: METHOD URL [header:value] [body]
                 HTTPRequest request = parseCommand(input);
                 if (request != null) {
                     sendRequest(request);
@@ -78,8 +50,6 @@ public class MyHTTPClient {
         System.out.println("  header <name>:<value>           - Add custom header (will apply to next requests)");
         System.out.println("  headers                        - Show current custom headers");
         System.out.println("  clearheaders                   - Clear all custom headers");
-        System.out.println("  cookies                        - Show stored cookies");
-        System.out.println("  clearcookies                   - Clear all cookies");
         System.out.println("  help                           - Show this help");
         System.out.println("  exit                           - Quit");
         System.out.println("\nExamples:");
@@ -89,6 +59,7 @@ public class MyHTTPClient {
         System.out.println("  header X-Custom-Token: abc123");
     }
     
+    // Store custom headers for successive requests
     private static Map<String, String> customHeaders = new HashMap<>();
     
     private static HTTPRequest parseCommand(String input) {
@@ -102,6 +73,7 @@ public class MyHTTPClient {
         String urlStr = parts[1];
         String body = parts.length > 2 ? parts[2] : null;
         
+        // Handle "header" command
         if (method.equals("HEADER")) {
             String[] headerParts = urlStr.split(":", 2);
             if (headerParts.length == 2) {
@@ -113,6 +85,7 @@ public class MyHTTPClient {
             return null;
         }
         
+        // Handle "headers" command
         if (method.equals("HEADERS")) {
             if (customHeaders.isEmpty()) {
                 System.out.println("No custom headers set");
@@ -125,24 +98,21 @@ public class MyHTTPClient {
             return null;
         }
         
+        // Handle "clearheaders" command
         if (method.equals("CLEARHEADERS")) {
             customHeaders.clear();
             System.out.println("All custom headers cleared");
             return null;
         }
         
-        if (method.equals("CLEARCOOKIES")) {
-            cookies.clear();
-            System.out.println("All cookies cleared");
-            return null;
-        }
-        
+        // Validate HTTP method
         List<String> validMethods = Arrays.asList("GET", "POST", "PUT", "DELETE", "HEAD");
         if (!validMethods.contains(method)) {
             System.err.println("Invalid method. Use: GET, POST, PUT, DELETE, HEAD");
             return null;
         }
         
+        // Validate body for methods that need it
         if ((method.equals("POST") || method.equals("PUT")) && (body == null || body.isEmpty())) {
             System.err.println(method + " requests require a body");
             return null;
@@ -153,6 +123,7 @@ public class MyHTTPClient {
     
     private static void sendRequest(HTTPRequest req) {
         try {
+            // Parse URL
             URL url = new URL(req.url);
             String host = url.getHost();
             int port = url.getPort() != -1 ? url.getPort() : 80;
@@ -161,33 +132,21 @@ public class MyHTTPClient {
             
             System.out.println("\n=== Sending " + req.method + " request to " + host + " ===");
             
+            // Build request
             StringBuilder requestBuilder = new StringBuilder();
             requestBuilder.append(req.method).append(" ").append(path).append(" HTTP/1.1\r\n");
             requestBuilder.append("Host: ").append(host).append("\r\n");
             requestBuilder.append("User-Agent: MyHTTPClient/1.0\r\n");
-            requestBuilder.append("Accept: r\n");
-            
-            cookies.entrySet().removeIf(entry -> entry.getValue().isExpired());
-            if (!cookies.isEmpty()) {
-                StringBuilder cookieHeader = new StringBuilder();
-                for (Map.Entry<String, CookieData> entry : cookies.entrySet()) {
-                    cookieHeader.append(entry.getKey())
-                                .append("=")
-                                .append(entry.getValue().value)
-                                .append("; ");
-                }
-                requestBuilder.append("Cookie: ")
-                              .append(cookieHeader.toString())
-                              .append("\r\n");
-            }
-            
+            requestBuilder.append("Accept: */*\r\n");
             requestBuilder.append("Connection: close\r\n");
             
+            // Add Content-Type for requests with body
             if (req.body != null && !req.body.isEmpty()) {
                 requestBuilder.append("Content-Type: application/json\r\n");
                 requestBuilder.append("Content-Length: ").append(req.body.getBytes().length).append("\r\n");
             }
             
+            // Add custom headers
             for (Map.Entry<String, String> entry : req.customHeaders.entrySet()) {
                 requestBuilder.append(entry.getKey()).append(": ").append(entry.getValue()).append("\r\n");
             }
@@ -200,6 +159,7 @@ public class MyHTTPClient {
             String request = requestBuilder.toString();
             System.out.println("Request:\n" + request);
             
+            // Connect and send
             try (Socket socket = new Socket(host, port)) {
                 OutputStream out = socket.getOutputStream();
                 out.write(request.getBytes());
@@ -207,8 +167,8 @@ public class MyHTTPClient {
                 
                 InputStream in = socket.getInputStream();
                 
+                // Parse response
                 String response = readFullResponse(in);
-                storeCookies(response);
                 System.out.println("\n=== RESPONSE ===");
                 System.out.println(response);
             }
@@ -230,38 +190,7 @@ public class MyHTTPClient {
         return response.toString();
     }
     
-    private static void storeCookies(String response) {
-        String[] lines = response.split("\r\n");
-        for (String line : lines) {
-            if (line.toLowerCase().startsWith("set-cookie:")) {
-                String cookieData = line.substring("Set-Cookie:".length()).trim();
-                String[] parts = cookieData.split(";");
-                
-                String name = null;
-                String value = null;
-                long maxAge = -1;
-                
-                for (String part : parts) {
-                    part = part.trim();
-                    if (part.contains("=") && !part.toLowerCase().startsWith("path") && !part.toLowerCase().startsWith("max-age")) {
-                        String[] kv = part.split("=", 2);
-                        name = kv[0].trim();
-                        value = kv[1].trim();
-                    }
-                    if (part.toLowerCase().startsWith("max-age=")) {
-                        maxAge = Long.parseLong(part.substring(8));
-                    }
-                }
-                
-                if (name != null && value != null) {
-                    long expiresAt = maxAge > 0 ? System.currentTimeMillis() + (maxAge * 1000) : Long.MAX_VALUE;
-                    cookies.put(name, new CookieData(value, expiresAt));
-                    System.out.println("Cookie stored: " + name + "=" + value + " (expires in " + maxAge + "s)");
-                }
-            }
-        }
-    }
-    
+    // Simple request class
     static class HTTPRequest {
         String method;
         String url;
@@ -275,5 +204,4 @@ public class MyHTTPClient {
             this.customHeaders = customHeaders;
         }
     }
-    */
 }

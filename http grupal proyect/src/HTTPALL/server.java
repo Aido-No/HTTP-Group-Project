@@ -14,8 +14,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.List;
-import java.util.ArrayList;
 import java.util.logging.*;
 import java.io.FileWriter;
 import java.io.PrintWriter;
@@ -163,14 +161,6 @@ public class server {
         }
     }
 
-
-    private static byte[] route(String method, String path, String body) {
-    
-    // ============ STATIC FILES ============
-    if ("GET".equals(method) && (path.equals("") || path.equals("/"))) {
-        return getStatichtml();
-
-
     private static byte[] route(String method, String path, String body, Map<String, String> headers) {
 
         if (!isAuthenticated(headers)) {
@@ -206,205 +196,12 @@ public class server {
 
         return jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
     }
-    
-    // GET /resource/{id}/comments
-    if ("GET".equals(method) && path.matches("/resource/\\d+/comments")) {
-        String[] parts = path.split("/");
-        int memeId = Integer.parseInt(parts[2]);
-        return getCommentsForMeme(memeId);
-    }
-    
-    // POST /resource/{id}/comments
-    if ("POST".equals(method) && path.matches("/resource/\\d+/comments")) {
-        String[] parts = path.split("/");
-        int memeId = Integer.parseInt(parts[2]);
-        return addCommentToMeme(memeId, body);
-    }
-    
-    // DELETE /resource/{id}/comments/{commentId}
-    if ("DELETE".equals(method) && path.matches("/resource/\\d+/comments/\\d+")) {
-        String[] parts = path.split("/");
-        int memeId = Integer.parseInt(parts[2]);
-        int commentId = Integer.parseInt(parts[4]);
-        return deleteComment(memeId, commentId);
-    }
-    
-    // ============ RESOURCE ENDPOINTS (Basic CRUD) ============
-    // GET /resource - get all memes
-    if ("GET".equals(method) && "/resource".equals(path)) {
-        return getAllResources();
-    }
-    
-    // GET /resource/{id} - get specific meme
-    if ("GET".equals(method) && path.matches("/resource/\\d+")) {
-        String[] parts = path.split("/");
-        int id = Integer.parseInt(parts[2]);
-        return getResourceById(id);
-    }
-    
-    // POST /resource - create meme
-    if ("POST".equals(method) && "/resource".equals(path)) {
-        return createResource(body);
-    }
-    
-    // PUT /resource/{id} - update meme
-    if ("PUT".equals(method) && path.matches("/resource/\\d+")) {
-        String[] parts = path.split("/");
-        int id = Integer.parseInt(parts[2]);
-        return updateResource(id, body);
-    }
-    
-    // DELETE /resource/{id} - delete meme
-    if ("DELETE".equals(method) && path.matches("/resource/\\d+")) {
-        String[] parts = path.split("/");
-        int id = Integer.parseInt(parts[2]);
-        return deleteResource(id);
-    }
-    
-    // ============ SERVING STATIC FILES ============
-    if ("GET".equals(method) && path.startsWith("/Resources/")) {
-        return gethtmlResource(path);
-    }
-    
-    return jsonResponse(404, "Not Found", "{\"error\":\"Endpoint not found\"}");
-}
 
 
-
-
-    }
-    
- // Get all comments for a specific meme
-    private static byte[] getCommentsForMeme(int memeId) {
-        // Check if meme exists first
-        if (!memes.containsKey(memeId)) {
-            return jsonResponse(404, "Not Found", "{\"error\":\"Meme not found\"}");
-        }
-        
-        List<Comment> memeComments = comments.getOrDefault(memeId, new ArrayList<>());
-        
-        // Build JSON array of comments
-        StringBuilder json = new StringBuilder("[");
-        for (int i = 0; i < memeComments.size(); i++) {
-            if (i > 0) json.append(",");
-            json.append(memeComments.get(i).toJson());
-        }
-        json.append("]");
-        
-        return jsonResponse(200, "OK", json.toString());
-    }
-
-    // Add a comment to a meme
-    private static byte[] addCommentToMeme(int memeId, String body) {
-        // Check if meme exists
-        if (!memes.containsKey(memeId)) {
-            return jsonResponse(404, "Not Found", "{\"error\":\"Meme not found\"}");
-        }
-        
-        // Parse JSON body to get author and text
-        // Expected format: {"author":"John","text":"This is funny!"}
-        String author = "";
-        String text = "";
-        
-        try {
-            // Simple parsing (you can use a JSON library like org.json for better parsing)
-            if (body.contains("\"author\"")) {
-                int authorStart = body.indexOf("\"author\"") + 9;
-                author = body.substring(authorStart, body.indexOf(",", authorStart));
-                author = author.replaceAll("\"", "").trim();
-            }
-            if (body.contains("\"text\"")) {
-                int textStart = body.indexOf("\"text\"") + 7;
-                int textEnd = body.indexOf("}", textStart);
-                text = body.substring(textStart, textEnd);
-                text = text.replaceAll("\"", "").trim();
-            }
-            
-            if (author.isEmpty() || text.isEmpty()) {
-                return jsonResponse(400, "Bad Request", "{\"error\":\"Missing author or text\"}");
-            }
-            
-            // Create comment
-            int commentId = nextCommentId.getAndIncrement();
-            Comment comment = new Comment(commentId, author, text);
-            
-            // Add to comments map
-            comments.computeIfAbsent(memeId, k -> new ArrayList<>()).add(comment);
-            
-            return jsonResponse(201, "Created", comment.toJson());
-            
-        } catch (Exception e) {
-            return jsonResponse(400, "Bad Request", "{\"error\":\"Invalid JSON format\"}");
-        }
-    }
-
-    // Delete a comment
-    private static byte[] deleteComment(int memeId, int commentId) {
-        // Check if meme exists
-        if (!memes.containsKey(memeId)) {
-            return jsonResponse(404, "Not Found", "{\"error\":\"Meme not found\"}");
-        }
-        
-        List<Comment> memeComments = comments.get(memeId);
-        if (memeComments == null) {
-            return jsonResponse(404, "Not Found", "{\"error\":\"Comment not found\"}");
-        }
-        
-        // Find and remove comment
-        boolean removed = memeComments.removeIf(comment -> comment.id == commentId);
-        
-        if (removed) {
-            return jsonResponse(200, "OK", "{\"message\":\"Comment deleted\"}");
-        } else {
-            return jsonResponse(404, "Not Found", "{\"error\":\"Comment not found\"}");
-        }
-    }
-
-   
-    private static byte[] createResource(String body) {
-        int id = nextId.getAndIncrement();
-        
-        // Create JSON file content
-        // Parse body to extract meme data
-        String memeData = body;
-        if (!memeData.contains("\"id\"")) {
-            // Insert id into the JSON
-            memeData = "{\"id\":" + id + "," + body.substring(1);
-        }
-        
-        // Save to file (as in your original code)
-        String filePath = memesFolder + "/" + id + ".json";
-        try {
-            java.nio.file.Files.write(java.nio.file.Paths.get(filePath), memeData.getBytes());
-            memes.put(id, filePath);
-            return jsonResponse(201, "Created", memeData);
-        } catch (Exception e) {
-            return jsonResponse(500, "Internal Server Error");
-        }
-    }
-
-
-    private static byte[] handleGetRequest(String path, String body) {
-        switch (path) {
-            case "":
-            case "/" :
-                return getStatichtml();
-            case "/resource": 
-                return getAllResources();
-        default:
-            if (path.matches("/resource/[^/]+")) {
-                int id = Integer.parseInt(path.split("/")[2]);
-                return getResourceById(id);
-            }
-            if (path.startsWith("/Resources/")) {
-                return gethtmlResource(path);
-            }
-            return jsonResponse(400, "Bad Request");
 
     private static byte[] handleGetRequest(String path, String body, Map<String,String> headers) {
         if (path.equals("/") || path.isEmpty()) {
             return getStatichtml();
-
         }
 
         if (path.equals("/resource")) {
@@ -597,37 +394,6 @@ public class server {
         return combined;
     }
     
-
-    
-    // Existing meme storage
-    private static Map<Integer, String> memes = new ConcurrentHashMap<>();
-    private static final AtomicInteger nextId = new AtomicInteger(1);
-
-    // NEW: Comment storage (memeId -> List of comments)
-    private static Map<Integer, List<Comment>> comments = new ConcurrentHashMap<>();
-    private static final AtomicInteger nextCommentId = new AtomicInteger(1);
-
-    // Comment class
-    static class Comment {
-        int id;
-        String author;
-        String text;
-        String timestamp;
-        
-        Comment(int id, String author, String text) {
-            this.id = id;
-            this.author = author;
-            this.text = text;
-            this.timestamp = new java.util.Date().toString();
-        }
-        
-        String toJson() {
-            return String.format("{\"id\":%d,\"author\":\"%s\",\"text\":\"%s\",\"timestamp\":\"%s\"}", 
-                id, author, text, timestamp);
-        }
-    }
-}
-
     private static byte[] jsonResponseWithETag(int code, String reason, String json, String etag) {
         String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
             + "Content-Type: application/json\r\n"
@@ -647,4 +413,3 @@ public class server {
     }
     
 }
-

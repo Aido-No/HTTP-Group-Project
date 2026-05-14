@@ -21,6 +21,7 @@ import java.io.PrintWriter;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.UUID;
+import java.security.MessageDigest;
 
 public class server {
 
@@ -35,8 +36,9 @@ public class server {
     private static final String htmlEndPoint = "Content/index.html";
     private static final String baseContentPath = "Content";
     
-    // ETag storage
+    // ETag storage - Now persistent with file hashes
     private static Map<Integer, String> etags = new ConcurrentHashMap<>();
+    private static Map<String, String> fileEtagCache = new ConcurrentHashMap<>(); // Cache file paths to ETags
     
     // Session storage for cookies
     private static Map<String, Session> sessions = new ConcurrentHashMap<>();
@@ -69,7 +71,10 @@ public class server {
         
         setUpHashMap();
         initLoging();
-        loadApiKey(); // FIXED: Added missing API key loading
+        loadApiKey();
+        
+        // Load existing ETags from disk
+        loadEtagsFromDisk();
         
         // Start session cleanup thread
         startSessionCleanup();
@@ -83,6 +88,82 @@ public class server {
                 new Thread(() -> handleConnection(socket)).start();
             }
         }
+    }
+    
+    private static void loadEtagsFromDisk() {
+        try {
+            Path etagFile = Paths.get("etags.dat");
+            if (Files.exists(etagFile)) {
+                List<String> lines = Files.readAllLines(etagFile);
+                for (String line : lines) {
+                    String[] parts = line.split(":", 2);
+                    if (parts.length == 2) {
+                        int id = Integer.parseInt(parts[0]);
+                        String etag = parts[1];
+                        etags.put(id, etag);
+                        System.out.println("Loaded ETag for ID " + id + ": " + etag);
+                    }
+                }
+                log("INFO", "Loaded " + etags.size() + " ETags from disk");
+            }
+        } catch (Exception e) {
+            log("WARNING", "Could not load ETags from disk: " + e.getMessage());
+        }
+    }
+    
+    private static void saveEtagsToDisk() {
+        try {
+            Path etagFile = Paths.get("etags.dat");
+            List<String> lines = new ArrayList<>();
+            for (Map.Entry<Integer, String> entry : etags.entrySet()) {
+                lines.add(entry.getKey() + ":" + entry.getValue());
+            }
+            Files.write(etagFile, lines);
+            log("INFO", "Saved " + etags.size() + " ETags to disk");
+        } catch (Exception e) {
+            log("WARNING", "Could not save ETags to disk: " + e.getMessage());
+        }
+    }
+    
+    private static String generateEtagFromContent(String content) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(content.getBytes("UTF-8"));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString().substring(0, 16); // Use first 16 chars for shorter ETag
+        } catch (Exception e) {
+            // Fallback to simple hash
+            return Integer.toHexString(content.hashCode());
+        }
+    }
+    
+    private static String getEtagForResource(int id) {
+        // Try to get from cache first
+        if (etags.containsKey(id)) {
+            return etags.get(id);
+        }
+        
+        // Generate from file content
+        try {
+            String memePath = memes.get(id);
+            if (memePath != null) {
+                Path path = Paths.get(memePath);
+                if (Files.exists(path)) {
+                    String content = new String(Files.readAllBytes(path));
+                    String etag = generateEtagFromContent(content);
+                    etags.put(id, etag);
+                    return etag;
+                }
+            }
+        } catch (Exception e) {
+            log("ERROR", "Error generating ETag for ID " + id + ": " + e.getMessage());
+        }
+        return null;
     }
     
     private static void startSessionCleanup() {
@@ -253,6 +334,14 @@ public class server {
                     contentLength = Integer.parseInt(line.substring(15).trim());
                 }
             }
+            
+            // Log ETag headers for debugging
+            if (headers.containsKey("if-none-match")) {
+                log("INFO", "Client sent If-None-Match: " + headers.get("if-none-match"));
+            }
+            if (headers.containsKey("if-match")) {
+                log("INFO", "Client sent If-Match: " + headers.get("if-match"));
+            }
 
             String body = "";
             if (contentLength > 0) {
@@ -293,7 +382,6 @@ public class server {
         if ("POST".equals(method) && "/memes".equals(path)) {
             try {
                 int id = nextId.getAndIncrement();
-                // FIXED: Handle empty or malformed body
                 if (body == null || body.length() <= 1) {
                     return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid body\"}", sessionId);
                 }
@@ -306,10 +394,14 @@ public class server {
                 Files.write(fullPath, entry.getBytes());
                 
                 memes.put(id, fullPath.toString());
-                String etag = Integer.toHexString(entry.hashCode());
+                
+                // Generate ETag using SHA-256
+                String etag = generateEtagFromContent(entry);
                 etags.put(id, etag);
-                log("INFO", "Created new meme with ID: " + id);
-                return jsonResponseWithCookie(201, "Created", entry, sessionId);
+                saveEtagsToDisk(); // Persist ETag to disk
+                
+                log("INFO", "Created new meme with ID: " + id + " ETag: " + etag);
+                return jsonResponseWithETagAndCookie(201, "Created", entry, etag, sessionId);
             } catch (Exception e) {
                 log("ERROR", "Error creating meme: " + e.getMessage());
                 return jsonResponseWithCookie(500, "Internal Server Error", "{\"error\":\"Failed to create meme\"}", sessionId);
@@ -321,6 +413,15 @@ public class server {
             try {
                 int id = Integer.parseInt(path.split("/")[2]);
                 if (memes.containsKey(id)) {
+                    // Check If-Match header for optimistic locking
+                    String ifMatch = headers.get("if-match");
+                    String currentEtag = getEtagForResource(id);
+                    
+                    if (ifMatch != null && currentEtag != null && !ifMatch.equals(currentEtag)) {
+                        log("WARNING", "ETag mismatch for PUT on ID " + id + ": client=" + ifMatch + ", server=" + currentEtag);
+                        return jsonResponseWithCookie(412, "Precondition Failed", "{\"error\":\"Resource has been modified\"}", sessionId);
+                    }
+                    
                     return handlePutRequest(id, body, sessionId);
                 } else {
                     return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId);
@@ -359,12 +460,23 @@ public class server {
         if (path.equals("/session-info")) {
             return getSessionInfo(sessionId);
         }
+        
+        // Add endpoint to test ETags
+        if (path.equals("/test-etag")) {
+            return testEtagResponse(sessionId);
+        }
 
         if (path.startsWith("/Resources/") || path.startsWith("/Content/")) {
             return gethtmlResource(path, sessionId);
         }
 
         return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid request path\"}", sessionId);
+    }
+    
+    private static byte[] testEtagResponse(String sessionId) {
+        String testContent = "{\"message\":\"This is a test resource for ETag validation\",\"timestamp\":" + System.currentTimeMillis() + "}";
+        String etag = generateEtagFromContent(testContent);
+        return jsonResponseWithETagAndCookie(200, "OK", testContent, etag, sessionId);
     }
     
     private static byte[] getSessionInfo(String sessionId) {
@@ -389,21 +501,30 @@ public class server {
                 
                 String meme = new String(Files.readAllBytes(path));
                 
-                // Get or generate ETag
-                String currentETag = etags.get(id);
-                if (currentETag == null) {
-                    currentETag = Integer.toHexString(meme.hashCode());
-                    etags.put(id, currentETag);
-                }
+                // Generate ETag from actual content
+                String currentETag = generateEtagFromContent(meme);
+                etags.put(id, currentETag);
+                
+                // Log ETag for debugging
+                log("INFO", "Resource ID " + id + " has ETag: " + currentETag);
                 
                 // Check if client has matching ETag
                 String clientETag = headers.get("if-none-match");
-                if (clientETag != null && clientETag.equals(currentETag)) {
-                    log("INFO", "Resource ID " + id + " not modified (ETag match)");
-                    return jsonResponseWithCookie(304, "Not Modified", true, sessionId);
+                if (clientETag != null) {
+                    // Remove quotes if present
+                    clientETag = clientETag.replaceAll("^\"|\"$", "");
+                    log("INFO", "Comparing client ETag: " + clientETag + " with server ETag: " + currentETag);
+                    
+                    if (clientETag.equals(currentETag)) {
+                        log("INFO", "Resource ID " + id + " not modified (ETag match) - returning 304");
+                        return jsonResponseWithCookie(304, "Not Modified", true, sessionId);
+                    } else {
+                        log("INFO", "Resource ID " + id + " modified - returning new content");
+                    }
+                } else {
+                    log("INFO", "No If-None-Match header provided - returning full content");
                 }
                 
-                log("INFO", "Returning resource ID: " + id);
                 return jsonResponseWithETagAndCookie(200, "OK", meme, currentETag, sessionId);
             } catch (Exception e) {
                 log("ERROR", "Error reading meme ID " + id + ": " + e.getMessage());
@@ -415,7 +536,6 @@ public class server {
     }
 
     private static byte[] handlePutRequest(int id, String body, String sessionId) {
-        // FIXED: Better validation for empty body
         if (body == null || body.length() <= 1) {
             return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId);
         }
@@ -437,9 +557,13 @@ public class server {
                     entry.getBytes(),
                     StandardOpenOption.TRUNCATE_EXISTING
             );
-            String newETag = Integer.toHexString(entry.hashCode());
+            
+            // Generate new ETag from updated content
+            String newETag = generateEtagFromContent(entry);
             etags.put(id, newETag);
-            log("INFO", "Updated meme ID: " + id);
+            saveEtagsToDisk(); // Persist updated ETag
+            
+            log("INFO", "Updated meme ID: " + id + " New ETag: " + newETag);
             return jsonResponseWithETagAndCookie(200, "OK", entry, newETag, sessionId);
         } catch (Exception e) {
             log("ERROR", "Error updating meme ID " + id + ": " + e.getMessage());
@@ -488,6 +612,7 @@ public class server {
                 }
                 memes.remove(id);
                 etags.remove(id);
+                saveEtagsToDisk(); // Update ETags file
                 log("INFO", "Deleted meme ID: " + id);
                 return jsonResponseWithCookie(200, "OK", "{\"message\":\"Resource deleted successfully\"}", sessionId);
             } catch (Exception e) {
@@ -501,7 +626,6 @@ public class server {
     }
 
     private static Path getResourcePath(String relativePath) {
-        // Try multiple possible base paths
         String[] basePaths = {
             "",
             "./",
@@ -516,13 +640,11 @@ public class server {
             }
         }
         
-        // Default: create in current directory
         return Paths.get(relativePath);
     }
 
     private static byte[] getStatichtml(String sessionId){
         try {
-            // Try multiple possible locations for index.html
             String[] possiblePaths = {
                 htmlEndPoint,
                 "./" + htmlEndPoint,
@@ -558,10 +680,8 @@ public class server {
 
     private static byte[] gethtmlResource(String fileName, String sessionId){
         try {
-            // Remove leading slash if present and normalize path
             String cleanPath = fileName.startsWith("/") ? fileName.substring(1) : fileName;
             
-            // Try multiple possible locations
             String[] possiblePaths = {
                 cleanPath,
                 "./" + cleanPath,
@@ -647,7 +767,6 @@ public class server {
         return buildResponse(code, reason, contentType, fileBytes);
     }
 
-    // NEW: Response methods with cookies for all responses
     private static byte[] jsonResponseWithCookie(int code, String reason, String json, String sessionId) {
         String cookieValue = sessionId;
         String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
@@ -675,10 +794,13 @@ public class server {
     }
     
     private static byte[] jsonResponseWithETagAndCookie(int code, String reason, String json, String etag, String sessionId) {
+        // Ensure ETag is quoted as per HTTP spec
+        String quotedEtag = "\"" + etag + "\"";
+        
         String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
                         + "Content-Type: application/json\r\n"
                         + "Content-Length: " + json.getBytes().length + "\r\n"
-                        + "ETag: \"" + etag + "\"\r\n"
+                        + "ETag: " + quotedEtag + "\r\n"
                         + "Cache-Control: private, max-age=3600\r\n"
                         + "Set-Cookie: session_id=" + sessionId + "; Path=/; Max-Age=1800; HttpOnly\r\n"
                         + "Connection: close\r\n\r\n";

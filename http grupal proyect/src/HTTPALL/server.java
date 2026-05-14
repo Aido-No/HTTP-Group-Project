@@ -164,13 +164,13 @@ public class server {
     }
 
 
-    private static byte[] route(String method, String path, String body) {
+  /*  private static byte[] route(String method, String path, String body) {
     
     // ============ STATIC FILES ============
     if ("GET".equals(method) && (path.equals("") || path.equals("/"))) {
         return getStatichtml();
 
-
+*/
     private static byte[] route(String method, String path, String body, Map<String, String> headers) {
 
         if (!isAuthenticated(headers)) {
@@ -206,7 +206,7 @@ public class server {
 
         return jsonResponse(404, "Not Found", "{\"error\":\"Not found\"}");
     }
-    
+    /*
     // GET /resource/{id}/comments
     if ("GET".equals(method) && path.matches("/resource/\\d+/comments")) {
         String[] parts = path.split("/");
@@ -272,7 +272,7 @@ public class server {
 
 
 
-    }
+    }*/
     
  // Get all comments for a specific meme
     private static byte[] getCommentsForMeme(int memeId) {
@@ -383,7 +383,7 @@ public class server {
         }
     }
 
-
+/*
     private static byte[] handleGetRequest(String path, String body) {
         switch (path) {
             case "":
@@ -400,7 +400,7 @@ public class server {
                 return gethtmlResource(path);
             }
             return jsonResponse(400, "Bad Request");
-
+*/
     private static byte[] handleGetRequest(String path, String body, Map<String,String> headers) {
         if (path.equals("/") || path.isEmpty()) {
             return getStatichtml();
@@ -600,8 +600,8 @@ public class server {
 
     
     // Existing meme storage
-    private static Map<Integer, String> memes = new ConcurrentHashMap<>();
-    private static final AtomicInteger nextId = new AtomicInteger(1);
+    //private static Map<Integer, String> memes = new ConcurrentHashMap<>();
+    //private static final AtomicInteger nextId = new AtomicInteger(1);
 
     // NEW: Comment storage (memeId -> List of comments)
     private static Map<Integer, List<Comment>> comments = new ConcurrentHashMap<>();
@@ -626,7 +626,7 @@ public class server {
                 id, author, text, timestamp);
         }
     }
-}
+
 
     private static byte[] jsonResponseWithETag(int code, String reason, String json, String etag) {
         String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"

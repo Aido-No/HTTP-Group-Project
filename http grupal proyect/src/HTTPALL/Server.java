@@ -7,6 +7,7 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.Map;
@@ -43,11 +44,11 @@ public class Server {
         File[] files = folder.listFiles();
         if (files == null) return;
 
-        int id = 0;
+        
         for (File file : files) {
             if (file.isFile() && file.getName().endsWith(".json")) {
+                int id = nextId.getAndIncrement();
                 memes.put(id, file.getPath());
-                id++;
             }
         }
     }
@@ -97,10 +98,8 @@ public class Server {
 
         //POST REQUESTS
         if ("POST".equals(method) && "/memes".equals(path)) {
-            int id = nextId.getAndIncrement();
-            String entry = "{\"id\":" + id + "," + body.substring(1);
-            memes.put(id, entry);
-            return jsonResponse(201, "Created", entry);
+            System.out.println(path);
+            return handlePostRequest(body);
         }
 
         //PUT REQUESTS
@@ -122,8 +121,9 @@ public class Server {
     }
 
     private static byte[] handleDeleteRequest(String path, String body) {
-            if (path.matches("/resource/[^/]+")) {
+            if (path.matches("/Memes/[^/]+")) {
                 int id = Integer.parseInt(path.split("/")[2]);
+                System.out.println(id);
 
                 return deleteResourceById(id);
             }
@@ -167,6 +167,26 @@ public class Server {
                 return jsonResponse(500, "Internal Server Error");
             }
             return jsonResponse(200, "OK", entry);
+    }
+
+    private static byte[] handlePostRequest(String body) {
+        int id = nextId.getAndIncrement();
+        String entry = "{\"id\":" + id + "," + body.substring(1);
+        
+        if (entry.isBlank()) {
+            return jsonResponse(400, "Bad Request", "{\"error\":\"Empty body\"}");
+        }
+
+        Path memePath = Paths.get(memesFolder, id + ".json");
+
+        try {
+            Files.createDirectories(memePath.getParent());
+            Files.write(memePath, entry.getBytes(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            memes.put(id, entry);
+        } catch (Exception e) {
+            return jsonResponse(500, "Internal Server Error");
+        }
+        return jsonResponse(201, "CREATED", entry);
     }
 
     private static byte[] deleteResourceById(int id) {

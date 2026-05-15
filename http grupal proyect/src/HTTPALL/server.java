@@ -1,6 +1,7 @@
 package HTTPALL;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -25,23 +26,23 @@ import java.security.MessageDigest;
 
 public class server {
 
-	private static final Logger logger = Logger.getLogger("HTTPServer");
-	private static PrintWriter logWriter;
-	private static String API_KEY = null;
+    private static final Logger logger = Logger.getLogger("HTTPServer");
+    private static PrintWriter logWriter;
+    private static String API_KEY = null;
     private static Map<Integer, String> memes = new ConcurrentHashMap<>();
     private static final AtomicInteger nextId = new AtomicInteger(1);
     
-    // FIXED: Use relative paths instead of absolute paths
     private static final String memesFolder = "Content/Memes";
     private static final String htmlEndPoint = "Content/index.html";
     private static final String baseContentPath = "Content";
     
-    // ETag storage - Now persistent with file hashes
     private static Map<Integer, String> etags = new ConcurrentHashMap<>();
-    private static Map<String, String> fileEtagCache = new ConcurrentHashMap<>(); // Cache file paths to ETags
-    
-    // Session storage for cookies
+    private static Map<String, String> fileEtagCache = new ConcurrentHashMap<>();
     private static Map<String, Session> sessions = new ConcurrentHashMap<>();
+    
+    // For persistent connections tracking
+    private static Map<Socket, Long> lastActivityTime = new ConcurrentHashMap<>();
+    private static final int KEEP_ALIVE_TIMEOUT = 5000; // 5 seconds
     
     static class Session {
         String sessionId;
@@ -57,7 +58,7 @@ public class server {
         }
         
         boolean isExpired() {
-            return (System.currentTimeMillis() - lastAccessedAt) > (30 * 60 * 1000); // 30 minutes timeout
+            return (System.currentTimeMillis() - lastAccessedAt) > (30 * 60 * 1000);
         }
         
         void refresh() {
@@ -66,28 +67,186 @@ public class server {
     }
     
     public static void main(String[] args) throws Exception {
-        // Debug: Show working directory
         System.out.println("Working Directory: " + System.getProperty("user.dir"));
         
         setUpHashMap();
         initLoging();
         loadApiKey();
-        
-        // Load existing ETags from disk
         loadEtagsFromDisk();
-        
-        // Start session cleanup thread
         startSessionCleanup();
         
         int port = 3000;
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             System.out.println("Server listening on port " + port);
+            System.out.println("HTTP/1.1 compliant with Keep-Alive and Chunked Transfer Encoding");
             log("INFO", "Server started on port " + port);
+            
+            // Start keep-alive cleanup thread
+            startKeepAliveCleanup();
+            
             while (true) {
                 Socket socket = serverSocket.accept();
-                new Thread(() -> handleConnection(socket)).start();
+                socket.setKeepAlive(true);
+                socket.setSoTimeout(KEEP_ALIVE_TIMEOUT);
+                new Thread(() -> handleConnectionWithKeepAlive(socket)).start();
             }
         }
+    }
+    
+    private static void startKeepAliveCleanup() {
+        Thread cleanupThread = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(30000); // Run every 30 seconds
+                    long now = System.currentTimeMillis();
+                    lastActivityTime.entrySet().removeIf(entry -> {
+                        try {
+                            if (now - entry.getValue() > KEEP_ALIVE_TIMEOUT) {
+                                if (!entry.getKey().isClosed()) {
+                                    entry.getKey().close();
+                                    log("INFO", "Closed idle connection: " + entry.getKey().getRemoteSocketAddress());
+                                }
+                                return true;
+                            }
+                        } catch (Exception e) {
+                            return true;
+                        }
+                        return false;
+                    });
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        });
+        cleanupThread.setDaemon(true);
+        cleanupThread.start();
+    }
+    
+    private static void handleConnectionWithKeepAlive(Socket socket) {
+        log("INFO", "New connection from " + socket.getRemoteSocketAddress());
+        lastActivityTime.put(socket, System.currentTimeMillis());
+        
+        try {
+            boolean keepAlive = true;
+            
+            while (keepAlive) {
+                try {
+                    BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                    OutputStream out = socket.getOutputStream();
+                    
+                    // Set socket timeout for reading
+                    socket.setSoTimeout(KEEP_ALIVE_TIMEOUT);
+                    
+                    String requestLine = in.readLine();
+                    if (requestLine == null || requestLine.isEmpty()) {
+                        break;
+                    }
+                    
+                    lastActivityTime.put(socket, System.currentTimeMillis());
+                    
+                    String[] parts = requestLine.split(" ");
+                    if (parts.length < 2) {
+                        break;
+                    }
+                    
+                    String method = parts[0];
+                    String path = parts[1];
+                    
+                    log("INFO", String.format("Request | %s %s from %s", method, path, socket.getRemoteSocketAddress()));
+                    
+                    Map<String, String> headers = new ConcurrentHashMap<>();
+                    String line;
+                    int contentLength = 0;
+                    boolean chunked = false;
+                    boolean connectionKeepAlive = false;
+                    
+                    while ((line = in.readLine()) != null && !line.isEmpty()) {
+                        String[] headerParts = line.split(":", 2);
+                        if (headerParts.length == 2) {
+                            String key = headerParts[0].trim().toLowerCase();
+                            String value = headerParts[1].trim();
+                            headers.put(key, value);
+                            
+                            if (key.equals("content-length")) {
+                                contentLength = Integer.parseInt(value);
+                            }
+                            if (key.equals("transfer-encoding") && value.equals("chunked")) {
+                                chunked = true;
+                            }
+                            if (key.equals("connection")) {
+                                connectionKeepAlive = value.equalsIgnoreCase("keep-alive");
+                            }
+                        }
+                    }
+                    
+                    String body = "";
+                    if (contentLength > 0) {
+                        char[] buf = new char[contentLength];
+                        int read = in.read(buf, 0, contentLength);
+                        if (read > 0) {
+                            body = new String(buf, 0, read);
+                        }
+                    } else if (chunked) {
+                        body = readChunkedBody(in);
+                    }
+                    
+                    String sessionId = getOrCreateSession(headers);
+                    
+                    byte[] response = route(method, path, body, headers, sessionId, connectionKeepAlive);
+                    out.write(response);
+                    out.flush();
+                    
+                    keepAlive = connectionKeepAlive;
+                    
+                    // Log response
+                    log("INFO", String.format("Response sent for %s %s (Session: %s, Keep-Alive: %s)", 
+                        method, path, sessionId, keepAlive));
+                    
+                } catch (java.net.SocketTimeoutException e) {
+                    log("INFO", "Socket timeout - closing connection");
+                    break;
+                } catch (Exception e) {
+                    log("WARNING", "Error in persistent connection: " + e.getMessage());
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            log("ERROR", "Error handling connection: " + e.getMessage());
+        } finally {
+            try {
+                if (!socket.isClosed()) {
+                    socket.close();
+                    log("INFO", "Connection closed from " + socket.getRemoteSocketAddress());
+                }
+                lastActivityTime.remove(socket);
+            } catch (Exception e) {
+                // Ignore
+            }
+        }
+    }
+    
+    private static String readChunkedBody(BufferedReader in) throws Exception {
+        StringBuilder body = new StringBuilder();
+        while (true) {
+            String chunkSizeLine = in.readLine();
+            if (chunkSizeLine == null) break;
+            
+            int chunkSize = Integer.parseInt(chunkSizeLine.trim(), 16);
+            if (chunkSize == 0) {
+                // Read trailing headers
+                while (true) {
+                    String trailer = in.readLine();
+                    if (trailer == null || trailer.isEmpty()) break;
+                }
+                break;
+            }
+            
+            char[] chunk = new char[chunkSize];
+            int read = in.read(chunk, 0, chunkSize);
+            body.append(chunk, 0, read);
+            in.readLine(); // Read the CRLF after chunk
+        }
+        return body.toString();
     }
     
     private static void loadEtagsFromDisk() {
@@ -135,20 +294,16 @@ public class server {
                 if (hex.length() == 1) hexString.append('0');
                 hexString.append(hex);
             }
-            return hexString.toString().substring(0, 16); // Use first 16 chars for shorter ETag
+            return hexString.toString().substring(0, 16);
         } catch (Exception e) {
-            // Fallback to simple hash
             return Integer.toHexString(content.hashCode());
         }
     }
     
     private static String getEtagForResource(int id) {
-        // Try to get from cache first
         if (etags.containsKey(id)) {
             return etags.get(id);
         }
-        
-        // Generate from file content
         try {
             String memePath = memes.get(id);
             if (memePath != null) {
@@ -170,7 +325,7 @@ public class server {
         Thread cleanupThread = new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(5 * 60 * 1000); // Run every 5 minutes
+                    Thread.sleep(5 * 60 * 1000);
                     sessions.entrySet().removeIf(entry -> entry.getValue().isExpired());
                     log("INFO", "Session cleanup completed. Active sessions: " + sessions.size());
                 } catch (InterruptedException e) {
@@ -183,7 +338,6 @@ public class server {
     }
     
     private static String getOrCreateSession(Map<String, String> headers) {
-        // Parse cookies from request
         String cookieHeader = headers.get("cookie");
         String existingSessionId = null;
         
@@ -198,7 +352,6 @@ public class server {
             }
         }
         
-        // If session exists and is valid, refresh and return it
         if (existingSessionId != null && sessions.containsKey(existingSessionId)) {
             Session session = sessions.get(existingSessionId);
             if (!session.isExpired()) {
@@ -210,7 +363,6 @@ public class server {
             }
         }
         
-        // Create new session
         String newSessionId = UUID.randomUUID().toString();
         Session newSession = new Session(newSessionId, "anonymous_" + System.currentTimeMillis());
         sessions.put(newSessionId, newSession);
@@ -234,7 +386,6 @@ public class server {
         String clientKey = headers.get("x-api-key");
         return clientKey != null && clientKey.equals(API_KEY);
     }
-
     
     private static void initLoging() {
         try {
@@ -252,14 +403,12 @@ public class server {
         if (logWriter != null) {
             logWriter.println(logEntry);
         }
-        // Also print to console for important messages
         if ("ERROR".equals(level) || "WARNING".equals(level)) {
             System.err.println(logEntry);
         }
     }
-
-    private static void setUpHashMap(){
-        // Try multiple possible locations for the memes folder
+    
+    private static void setUpHashMap() {
         File folder = null;
         String[] possiblePaths = {
             memesFolder,
@@ -280,13 +429,12 @@ public class server {
         
         if (folder == null || !folder.exists() || !folder.isDirectory()) {
             System.err.println("Invalid folder path: " + memesFolder);
-            System.err.println("Tried paths: " + String.join(", ", possiblePaths));
             return;
         }
-
+        
         File[] files = folder.listFiles();
         if (files == null) return;
-
+        
         int id = 0;
         for (File file : files) {
             if (file.isFile() && file.getName().endsWith(".json")) {
@@ -297,295 +445,190 @@ public class server {
         }
         System.out.println("Total memes loaded: " + memes.size());
     }
-
-    private static void handleConnection(Socket socket) {
-        log("INFO", "New connection from " + socket.getRemoteSocketAddress());
-        
-        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-             OutputStream out = socket.getOutputStream()) {
-
-            String requestLine = in.readLine();
-            if (requestLine == null) {
-                log("WARNING", "Empty request from " + socket.getRemoteSocketAddress());
-                return;
-            }
-
-            String[] parts = requestLine.split(" ");
-            if (parts.length < 2) {
-                log("WARNING", "Malformed request line: " + requestLine);
-                return;
-            }
-            
-            String method = parts[0];
-            String path = parts[1];
-            
-            log("INFO", String.format("Request | %s %s from %s", method, path, socket.getRemoteSocketAddress()));
-
-            // Parse headers into a map
-            Map<String, String> headers = new ConcurrentHashMap<>();
-            String line;
-            int contentLength = 0;
-            while ((line = in.readLine()) != null && !line.isEmpty()) {
-                String[] headerParts = line.split(":", 2);
-                if (headerParts.length == 2) {
-                    headers.put(headerParts[0].trim().toLowerCase(), headerParts[1].trim());
-                }
-                if (line.toLowerCase().startsWith("content-length:")) {
-                    contentLength = Integer.parseInt(line.substring(15).trim());
-                }
-            }
-            
-            // Log ETag headers for debugging
-            if (headers.containsKey("if-none-match")) {
-                log("INFO", "Client sent If-None-Match: " + headers.get("if-none-match"));
-            }
-            if (headers.containsKey("if-match")) {
-                log("INFO", "Client sent If-Match: " + headers.get("if-match"));
-            }
-
-            String body = "";
-            if (contentLength > 0) {
-                char[] buf = new char[contentLength];
-                int read = in.read(buf, 0, contentLength);
-                if (read > 0) {
-                    body = new String(buf, 0, read);
-                }
-            }
-
-            // Get or create session for this request
-            String sessionId = getOrCreateSession(headers);
-            
-            // Pass headers and session to route method
-            byte[] response = route(method, path, body, headers, sessionId);
-            out.write(response);
-            out.flush();
-            
-            log("INFO", String.format("Response sent for %s %s (Session: %s)", method, path, sessionId));
-        } catch (Exception e) {
-            log("ERROR", "Error handling connection: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    private static byte[] route(String method, String path, String body, Map<String, String> headers, String sessionId) {
-
+    
+    private static byte[] route(String method, String path, String body, Map<String, String> headers, String sessionId, boolean keepAlive) {
         if (!isAuthenticated(headers)) {
             log("WARNING", "Authentication failed for request: " + method + " " + path);
-            return jsonResponseWithCookie(401, "Unauthorized", "{\"error\":\"Valid API key required\"}", sessionId);
+            return jsonResponseWithCookieAndKeepAlive(401, "Unauthorized", "{\"error\":\"Valid API key required\"}", sessionId, keepAlive);
         }
-
+        
         if ("GET".equals(method)) {
-            return handleGetRequest(path, body, headers, sessionId);
+            return handleGetRequest(path, body, headers, sessionId, keepAlive);
         }
-
-        //POST REQUESTS
+        
         if ("POST".equals(method) && "/memes".equals(path)) {
             try {
                 int id = nextId.getAndIncrement();
                 if (body == null || body.length() <= 1) {
-                    return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid body\"}", sessionId);
+                    return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid body\"}", sessionId, keepAlive);
                 }
                 String entry = "{\"id\":" + id + "," + body.substring(1);
                 
-                // Save to file
                 String filePath = memesFolder + "/meme_" + id + ".json";
                 Path fullPath = getResourcePath(filePath);
                 Files.createDirectories(fullPath.getParent());
                 Files.write(fullPath, entry.getBytes());
                 
                 memes.put(id, fullPath.toString());
-                
-                // Generate ETag using SHA-256
                 String etag = generateEtagFromContent(entry);
                 etags.put(id, etag);
-                saveEtagsToDisk(); // Persist ETag to disk
+                saveEtagsToDisk();
                 
                 log("INFO", "Created new meme with ID: " + id + " ETag: " + etag);
-                return jsonResponseWithETagAndCookie(201, "Created", entry, etag, sessionId);
+                return jsonResponseWithETagCookieAndKeepAlive(201, "Created", entry, etag, sessionId, keepAlive);
             } catch (Exception e) {
                 log("ERROR", "Error creating meme: " + e.getMessage());
-                return jsonResponseWithCookie(500, "Internal Server Error", "{\"error\":\"Failed to create meme\"}", sessionId);
+                return jsonResponseWithCookieAndKeepAlive(500, "Internal Server Error", "{\"error\":\"Failed to create meme\"}", sessionId, keepAlive);
             }
         }
-
-        //PUT REQUESTS
+        
         if ("PUT".equals(method) && path.matches("/memes/[^/]+")) {
             try {
                 int id = Integer.parseInt(path.split("/")[2]);
                 if (memes.containsKey(id)) {
-                    // Check If-Match header for optimistic locking
                     String ifMatch = headers.get("if-match");
                     String currentEtag = getEtagForResource(id);
                     
                     if (ifMatch != null && currentEtag != null && !ifMatch.equals(currentEtag)) {
-                        log("WARNING", "ETag mismatch for PUT on ID " + id + ": client=" + ifMatch + ", server=" + currentEtag);
-                        return jsonResponseWithCookie(412, "Precondition Failed", "{\"error\":\"Resource has been modified\"}", sessionId);
+                        return jsonResponseWithCookieAndKeepAlive(412, "Precondition Failed", "{\"error\":\"Resource has been modified\"}", sessionId, keepAlive);
                     }
-                    
-                    return handlePutRequest(id, body, sessionId);
+                    return handlePutRequest(id, body, sessionId, keepAlive);
                 } else {
-                    return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId);
+                    return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
                 }
             } catch (NumberFormatException e) {
-                return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId);
+                return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId, keepAlive);
             }
         }
-
+        
         if ("DELETE".equals(method)) {
-            return handleDeleteRequest(path, body, sessionId);
+            return handleDeleteRequest(path, body, sessionId, keepAlive);
         }
-
-        return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Not found\"}", sessionId);
+        
+        return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Not found\"}", sessionId, keepAlive);
     }
-
-    private static byte[] handleGetRequest(String path, String body, Map<String,String> headers, String sessionId) {
+    
+    private static byte[] handleGetRequest(String path, String body, Map<String,String> headers, String sessionId, boolean keepAlive) {
         if (path.equals("/") || path.isEmpty()) {
-            return getStatichtml(sessionId);
+            return getStatichtml(sessionId, keepAlive);
         }
-
+        
         if (path.equals("/resource")) {
-            return getAllResources(sessionId);
+            return getAllResources(sessionId, keepAlive);
         }
-
+        
         if (path.matches("/resource/[^/]+")) {
             try {
                 int id = Integer.parseInt(path.split("/")[2]);
-                return getResourceById(id, headers, sessionId);
+                return getResourceById(id, headers, sessionId, keepAlive);
             } catch (NumberFormatException e) {
-                return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId);
+                return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId, keepAlive);
             }
         }
         
-        // Add endpoint to get session info (for testing)
         if (path.equals("/session-info")) {
-            return getSessionInfo(sessionId);
+            return getSessionInfo(sessionId, keepAlive);
         }
         
-        // Add endpoint to test ETags
         if (path.equals("/test-etag")) {
-            return testEtagResponse(sessionId);
+            return testEtagResponse(sessionId, keepAlive);
         }
-
+        
         if (path.startsWith("/Resources/") || path.startsWith("/Content/")) {
-            return gethtmlResource(path, sessionId);
+            return gethtmlResource(path, sessionId, keepAlive);
         }
-
-        return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid request path\"}", sessionId);
+        
+        return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid request path\"}", sessionId, keepAlive);
     }
     
-    private static byte[] testEtagResponse(String sessionId) {
+    private static byte[] testEtagResponse(String sessionId, boolean keepAlive) {
         String testContent = "{\"message\":\"This is a test resource for ETag validation\",\"timestamp\":" + System.currentTimeMillis() + "}";
         String etag = generateEtagFromContent(testContent);
-        return jsonResponseWithETagAndCookie(200, "OK", testContent, etag, sessionId);
+        return jsonResponseWithETagCookieAndKeepAlive(200, "OK", testContent, etag, sessionId, keepAlive);
     }
     
-    private static byte[] getSessionInfo(String sessionId) {
+    private static byte[] getSessionInfo(String sessionId, boolean keepAlive) {
         Session session = sessions.get(sessionId);
         if (session != null) {
             String info = String.format("{\"sessionId\":\"%s\",\"userId\":\"%s\",\"createdAt\":%d,\"lastAccessedAt\":%d,\"isExpired\":%b}",
                 session.sessionId, session.userId, session.createdAt, session.lastAccessedAt, session.isExpired());
-            return jsonResponseWithCookie(200, "OK", info, sessionId);
+            return jsonResponseWithCookieAndKeepAlive(200, "OK", info, sessionId, keepAlive);
         }
-        return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Session not found\"}", sessionId);
+        return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Session not found\"}", sessionId, keepAlive);
     }
-
-    private static byte[] getResourceById(int id, Map<String, String> headers, String sessionId) {
+    
+    private static byte[] getResourceById(int id, Map<String, String> headers, String sessionId, boolean keepAlive) {
         if (memes.containsKey(id)) {
             try {
                 String memePath = memes.get(id);
                 Path path = Paths.get(memePath);
                 if (!Files.exists(path)) {
-                    log("ERROR", "Meme file not found: " + memePath);
-                    return jsonResponseWithCookie(404, "Resource file missing", "{\"error\":\"Resource not found\"}", sessionId);
+                    return jsonResponseWithCookieAndKeepAlive(404, "Resource file missing", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
                 }
                 
                 String meme = new String(Files.readAllBytes(path));
-                
-                // Generate ETag from actual content
                 String currentETag = generateEtagFromContent(meme);
                 etags.put(id, currentETag);
                 
-                // Log ETag for debugging
-                log("INFO", "Resource ID " + id + " has ETag: " + currentETag);
-                
-                // Check if client has matching ETag
                 String clientETag = headers.get("if-none-match");
                 if (clientETag != null) {
-                    // Remove quotes if present
                     clientETag = clientETag.replaceAll("^\"|\"$", "");
-                    log("INFO", "Comparing client ETag: " + clientETag + " with server ETag: " + currentETag);
-                    
                     if (clientETag.equals(currentETag)) {
-                        log("INFO", "Resource ID " + id + " not modified (ETag match) - returning 304");
-                        return jsonResponseWithCookie(304, "Not Modified", true, sessionId);
-                    } else {
-                        log("INFO", "Resource ID " + id + " modified - returning new content");
+                        return jsonResponseWithCookieAndKeepAlive(304, "Not Modified", true, sessionId, keepAlive);
                     }
-                } else {
-                    log("INFO", "No If-None-Match header provided - returning full content");
                 }
                 
-                return jsonResponseWithETagAndCookie(200, "OK", meme, currentETag, sessionId);
+                return jsonResponseWithETagCookieAndKeepAlive(200, "OK", meme, currentETag, sessionId, keepAlive);
             } catch (Exception e) {
                 log("ERROR", "Error reading meme ID " + id + ": " + e.getMessage());
-                return jsonResponseWithCookie(500, "Internal Server Error", "{\"error\":\"Failed to read resource\"}", sessionId);
+                return jsonResponseWithCookieAndKeepAlive(500, "Internal Server Error", "{\"error\":\"Failed to read resource\"}", sessionId, keepAlive);
             }
         }
-        log("WARNING", "Resource ID not found: " + id);
-        return jsonResponseWithCookie(404, "Not found", "{\"error\":\"Resource not found\"}", sessionId);
+        return jsonResponseWithCookieAndKeepAlive(404, "Not found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
     }
-
-    private static byte[] handlePutRequest(int id, String body, String sessionId) {
+    
+    private static byte[] handlePutRequest(int id, String body, String sessionId, boolean keepAlive) {
         if (body == null || body.length() <= 1) {
-            return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId);
+            return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId, keepAlive);
         }
         
         String entry = body.substring(1);
-        
         if (entry.trim().isEmpty()) {
-            return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId);
+            return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId, keepAlive);
         }
-
+        
         String memepath = memes.get(id);
         if (memepath == null) {
-            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Resource not found\"}", sessionId);
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
         }
-
+        
         try {
-            Files.write(
-                    Paths.get(memepath),
-                    entry.getBytes(),
-                    StandardOpenOption.TRUNCATE_EXISTING
-            );
-            
-            // Generate new ETag from updated content
+            Files.write(Paths.get(memepath), entry.getBytes(), StandardOpenOption.TRUNCATE_EXISTING);
             String newETag = generateEtagFromContent(entry);
             etags.put(id, newETag);
-            saveEtagsToDisk(); // Persist updated ETag
-            
-            log("INFO", "Updated meme ID: " + id + " New ETag: " + newETag);
-            return jsonResponseWithETagAndCookie(200, "OK", entry, newETag, sessionId);
+            saveEtagsToDisk();
+            return jsonResponseWithETagCookieAndKeepAlive(200, "OK", entry, newETag, sessionId, keepAlive);
         } catch (Exception e) {
             log("ERROR", "Error updating meme ID " + id + ": " + e.getMessage());
-            return jsonResponseWithCookie(500, "Internal Server Error", "{\"error\":\"Failed to update resource\"}", sessionId);
+            return jsonResponseWithCookieAndKeepAlive(500, "Internal Server Error", "{\"error\":\"Failed to update resource\"}", sessionId, keepAlive);
         }
     }
-
-    private static byte[] handleDeleteRequest(String path, String body, String sessionId) {
+    
+    private static byte[] handleDeleteRequest(String path, String body, String sessionId, boolean keepAlive) {
         if (path.matches("/resource/[^/]+")) {
             try {
                 int id = Integer.parseInt(path.split("/")[2]);
-                return deleteResourceById(id, sessionId);
+                return deleteResourceById(id, sessionId, keepAlive);
             } catch (NumberFormatException e) {
-                return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId);
+                return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId, keepAlive);
             }
         }
-        return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid delete path\"}", sessionId);
+        return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid delete path\"}", sessionId, keepAlive);
     }
-
-    private static byte[] getAllResources(String sessionId) {
+    
+    private static byte[] getAllResources(String sessionId, boolean keepAlive) {
         if (memes.isEmpty()) {
-            return jsonResponseWithCookie(200, "OK", "[]", sessionId);
+            return jsonResponseWithCookieAndKeepAlive(200, "OK", "[]", sessionId, keepAlive);
         }
         
         List<String> validMemes = new ArrayList<>();
@@ -599,10 +642,10 @@ public class server {
         }
         
         String json = "[" + String.join(",", validMemes) + "]";
-        return jsonResponseWithCookie(200, "OK", json, sessionId);
+        return jsonResponseWithCookieAndKeepAlive(200, "OK", json, sessionId, keepAlive);
     }
-
-    private static byte[] deleteResourceById(int id, String sessionId) {
+    
+    private static byte[] deleteResourceById(int id, String sessionId, boolean keepAlive) {
         if (memes.containsKey(id)) {
             try {
                 String memePath = memes.get(id);
@@ -612,46 +655,32 @@ public class server {
                 }
                 memes.remove(id);
                 etags.remove(id);
-                saveEtagsToDisk(); // Update ETags file
-                log("INFO", "Deleted meme ID: " + id);
-                return jsonResponseWithCookie(200, "OK", "{\"message\":\"Resource deleted successfully\"}", sessionId);
+                saveEtagsToDisk();
+                return jsonResponseWithCookieAndKeepAlive(200, "OK", "{\"message\":\"Resource deleted successfully\"}", sessionId, keepAlive);
             } catch (Exception e) {
-                log("ERROR", "Error deleting meme ID " + id + ": " + e.getMessage());
-                return jsonResponseWithCookie(500, "Internal Server Error", "{\"error\":\"Failed to delete resource\"}", sessionId);
+                return jsonResponseWithCookieAndKeepAlive(500, "Internal Server Error", "{\"error\":\"Failed to delete resource\"}", sessionId, keepAlive);
             }
         } else {
-            log("WARNING", "Attempted to delete non-existent resource ID: " + id);
-            return jsonResponseWithCookie(404, "Not found", "{\"error\":\"Resource not found\"}", sessionId);
+            return jsonResponseWithCookieAndKeepAlive(404, "Not found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
         }
     }
-
+    
     private static Path getResourcePath(String relativePath) {
-        String[] basePaths = {
-            "",
-            "./",
-            "src/HTTPALL/",
-            "./src/HTTPALL/"
-        };
-        
+        String[] basePaths = {"", "./", "src/HTTPALL/", "./src/HTTPALL/"};
         for (String basePath : basePaths) {
             Path fullPath = Paths.get(basePath + relativePath);
             if (Files.exists(fullPath.getParent()) || relativePath.equals(memesFolder + "/meme_1.json")) {
                 return fullPath;
             }
         }
-        
         return Paths.get(relativePath);
     }
-
-    private static byte[] getStatichtml(String sessionId){
+    
+    private static byte[] getStatichtml(String sessionId, boolean keepAlive) {
         try {
             String[] possiblePaths = {
-                htmlEndPoint,
-                "./" + htmlEndPoint,
-                "src/HTTPALL/" + htmlEndPoint,
-                "./src/HTTPALL/" + htmlEndPoint,
-                "Content/index.html",
-                "./Content/index.html"
+                htmlEndPoint, "./" + htmlEndPoint, "src/HTTPALL/" + htmlEndPoint,
+                "./src/HTTPALL/" + htmlEndPoint, "Content/index.html", "./Content/index.html"
             };
             
             Path fullPath = null;
@@ -659,35 +688,28 @@ public class server {
                 Path testPath = Paths.get(path);
                 if (Files.exists(testPath)) {
                     fullPath = testPath;
-                    System.out.println("Found index.html at: " + fullPath.toAbsolutePath());
                     break;
                 }
             }
             
             if (fullPath == null) {
-                log("ERROR", "index.html not found in any expected location");
-                return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"index.html not found\"}", sessionId);
+                return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"index.html not found\"}", sessionId, keepAlive);
             }
             
             byte[] fileBytes = Files.readAllBytes(fullPath);
             String contentType = getContentType(htmlEndPoint);
-            return fileResponseWithCookie(200, "OK", fileBytes, contentType, sessionId);
+            return fileResponseWithCookieAndKeepAlive(200, "OK", fileBytes, contentType, sessionId, keepAlive);
         } catch (Exception e) {
-            log("ERROR", "Error serving index.html: " + e.getMessage());
-            return jsonResponseWithCookie(500, "Internal server error", "{\"error\":\"Failed to load page\"}", sessionId);
+            return jsonResponseWithCookieAndKeepAlive(500, "Internal server error", "{\"error\":\"Failed to load page\"}", sessionId, keepAlive);
         }
     }
-
-    private static byte[] gethtmlResource(String fileName, String sessionId){
+    
+    private static byte[] gethtmlResource(String fileName, String sessionId, boolean keepAlive) {
         try {
             String cleanPath = fileName.startsWith("/") ? fileName.substring(1) : fileName;
-            
             String[] possiblePaths = {
-                cleanPath,
-                "./" + cleanPath,
-                "src/HTTPALL/" + cleanPath,
-                "./src/HTTPALL/" + cleanPath,
-                baseContentPath + "/" + cleanPath.replaceAll("^Resources/|^Content/", "")
+                cleanPath, "./" + cleanPath, "src/HTTPALL/" + cleanPath,
+                "./src/HTTPALL/" + cleanPath, baseContentPath + "/" + cleanPath.replaceAll("^Resources/|^Content/", "")
             };
             
             Path fullPath = null;
@@ -702,18 +724,15 @@ public class server {
             if (fullPath != null && Files.exists(fullPath)) {
                 byte[] fileBytes = Files.readAllBytes(fullPath);
                 String contentType = getContentType(fileName);
-                log("INFO", "Serving static file: " + fileName);
-                return fileResponseWithCookie(200, "OK", fileBytes, contentType, sessionId);
+                return fileResponseWithCookieAndKeepAlive(200, "OK", fileBytes, contentType, sessionId, keepAlive);
             }
             
-            log("WARNING", "Static resource not found: " + fileName);
-            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Resource not found\"}", sessionId);
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
         } catch (Exception e) {
-            log("ERROR", "Error serving static resource " + fileName + ": " + e.getMessage());
-            return jsonResponseWithCookie(500, "Internal server error", "{\"error\":\"Failed to load resource\"}", sessionId);
+            return jsonResponseWithCookieAndKeepAlive(500, "Internal server error", "{\"error\":\"Failed to load resource\"}", sessionId, keepAlive);
         }
     }
-
+    
     private static String getContentType(String fileName) {
         if (fileName.endsWith(".html")) return "text/html";
         if (fileName.endsWith(".css")) return "text/css";
@@ -725,77 +744,61 @@ public class server {
         if (fileName.endsWith(".json")) return "application/json";
         return "application/octet-stream";
     }
-
-    private static byte[] buildResponse(int code, String reason, String contentType, byte[]... bodies) {
-        int totalLength = 0;
-        for (byte[] b : bodies) totalLength += b.length;
-
+    
+    private static byte[] buildResponseWithKeepAlive(int code, String reason, String contentType, byte[] body, boolean keepAlive) {
+        String connectionHeader = keepAlive ? "keep-alive" : "close";
+        String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
+        
         String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
             + "Content-Type: " + contentType + "\r\n"
-            + "Content-Length: " + totalLength + "\r\n"
-            + "Connection: close\r\n"
+            + "Content-Length: " + body.length + "\r\n"
+            + "Connection: " + connectionHeader + "\r\n"
+            + keepAliveHeader
             + "\r\n";
-
+        
         byte[] headerBytes = headers.getBytes();
-        byte[] combined = new byte[headerBytes.length + totalLength];
-        int pos = 0;
-        System.arraycopy(headerBytes, 0, combined, pos, headerBytes.length);
-        pos += headerBytes.length;
-        for (byte[] b : bodies) {
-            System.arraycopy(b, 0, combined, pos, b.length);
-            pos += b.length;
-        }
+        byte[] combined = new byte[headerBytes.length + body.length];
+        System.arraycopy(headerBytes, 0, combined, 0, headerBytes.length);
+        System.arraycopy(body, 0, combined, headerBytes.length, body.length);
         return combined;
     }
-
-    private static byte[] jsonResponse(int code, String reason, String json) {
-        return buildResponse(code, reason, "application/json", json.getBytes());
-    }
-
-    private static byte[] jsonResponse(int code, String reason) {
-        return jsonResponse(code, reason, "{}");
-    }
     
-    private static byte[] jsonResponse(int code, String reason, boolean noBody) {
-        String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
-            + "Connection: close\r\n"
-            + "\r\n";
-        return headers.getBytes();
-    }
-
-    private static byte[] fileResponse(int code, String reason, byte[] fileBytes, String contentType) {
-        return buildResponse(code, reason, contentType, fileBytes);
-    }
-
-    private static byte[] jsonResponseWithCookie(int code, String reason, String json, String sessionId) {
-        String cookieValue = sessionId;
+    private static byte[] jsonResponseWithCookieAndKeepAlive(int code, String reason, String json, String sessionId, boolean keepAlive) {
+        String connectionHeader = keepAlive ? "keep-alive" : "close";
+        String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
+        
         String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
                         + "Content-Type: application/json\r\n"
                         + "Content-Length: " + json.getBytes().length + "\r\n"
-                        + "Set-Cookie: session_id=" + cookieValue + "; Path=/; Max-Age=1800; HttpOnly\r\n"
-                        + "Connection: close\r\n\r\n";
+                        + "Set-Cookie: session_id=" + sessionId + "; Path=/; Max-Age=1800; HttpOnly\r\n"
+                        + "Connection: " + connectionHeader + "\r\n"
+                        + keepAliveHeader
+                        + "\r\n";
         
         byte[] headerBytes = headers.getBytes();
         byte[] jsonBytes = json.getBytes();
         byte[] combined = new byte[headerBytes.length + jsonBytes.length];
-        
         System.arraycopy(headerBytes, 0, combined, 0, headerBytes.length);
         System.arraycopy(jsonBytes, 0, combined, headerBytes.length, jsonBytes.length);
-        
         return combined;
     }
     
-    private static byte[] jsonResponseWithCookie(int code, String reason, boolean noBody, String sessionId) {
+    private static byte[] jsonResponseWithCookieAndKeepAlive(int code, String reason, boolean noBody, String sessionId, boolean keepAlive) {
+        String connectionHeader = keepAlive ? "keep-alive" : "close";
+        String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
+        
         String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
                         + "Set-Cookie: session_id=" + sessionId + "; Path=/; Max-Age=1800; HttpOnly\r\n"
-                        + "Connection: close\r\n"
+                        + "Connection: " + connectionHeader + "\r\n"
+                        + keepAliveHeader
                         + "\r\n";
         return headers.getBytes();
     }
     
-    private static byte[] jsonResponseWithETagAndCookie(int code, String reason, String json, String etag, String sessionId) {
-        // Ensure ETag is quoted as per HTTP spec
+    private static byte[] jsonResponseWithETagCookieAndKeepAlive(int code, String reason, String json, String etag, String sessionId, boolean keepAlive) {
         String quotedEtag = "\"" + etag + "\"";
+        String connectionHeader = keepAlive ? "keep-alive" : "close";
+        String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
         
         String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
                         + "Content-Type: application/json\r\n"
@@ -803,54 +806,34 @@ public class server {
                         + "ETag: " + quotedEtag + "\r\n"
                         + "Cache-Control: private, max-age=3600\r\n"
                         + "Set-Cookie: session_id=" + sessionId + "; Path=/; Max-Age=1800; HttpOnly\r\n"
-                        + "Connection: close\r\n\r\n";
+                        + "Connection: " + connectionHeader + "\r\n"
+                        + keepAliveHeader
+                        + "\r\n";
         
         byte[] headerBytes = headers.getBytes();
         byte[] jsonBytes = json.getBytes();
         byte[] combined = new byte[headerBytes.length + jsonBytes.length];
-        
         System.arraycopy(headerBytes, 0, combined, 0, headerBytes.length);
         System.arraycopy(jsonBytes, 0, combined, headerBytes.length, jsonBytes.length);
-        
         return combined;
     }
     
-    private static byte[] fileResponseWithCookie(int code, String reason, byte[] fileBytes, String contentType, String sessionId) {
+    private static byte[] fileResponseWithCookieAndKeepAlive(int code, String reason, byte[] fileBytes, String contentType, String sessionId, boolean keepAlive) {
+        String connectionHeader = keepAlive ? "keep-alive" : "close";
+        String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
+        
         String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
                         + "Content-Type: " + contentType + "\r\n"
                         + "Content-Length: " + fileBytes.length + "\r\n"
                         + "Set-Cookie: session_id=" + sessionId + "; Path=/; Max-Age=1800; HttpOnly\r\n"
-                        + "Connection: close\r\n\r\n";
+                        + "Connection: " + connectionHeader + "\r\n"
+                        + keepAliveHeader
+                        + "\r\n";
         
         byte[] headerBytes = headers.getBytes();
         byte[] combined = new byte[headerBytes.length + fileBytes.length];
-        
         System.arraycopy(headerBytes, 0, combined, 0, headerBytes.length);
         System.arraycopy(fileBytes, 0, combined, headerBytes.length, fileBytes.length);
-        
         return combined;
-    }
-    
-    // Comments feature (can be expanded later)
-    private static Map<Integer, List<Comment>> comments = new ConcurrentHashMap<>();
-    private static final AtomicInteger nextCommentId = new AtomicInteger(1);
-
-    static class Comment {
-        int id;
-        String author;
-        String text;
-        String timestamp;
-        
-        Comment(int id, String author, String text) {
-            this.id = id;
-            this.author = author;
-            this.text = text;
-            this.timestamp = new java.util.Date().toString();
-        }
-        
-        String toJson() {
-            return String.format("{\"id\":%d,\"author\":\"%s\",\"text\":\"%s\",\"timestamp\":\"%s\"}", 
-                id, author, text, timestamp);
-        }
     }
 }

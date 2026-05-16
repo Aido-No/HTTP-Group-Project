@@ -32,6 +32,9 @@ public class server {
     private static Map<Integer, String> memes = new ConcurrentHashMap<>();
     private static final AtomicInteger nextId = new AtomicInteger(1);
     
+    private static Map<Integer, List<Comment>> comments = new ConcurrentHashMap<>();
+    private static final AtomicInteger nextCommentId = new AtomicInteger(1);
+    
     private static final String memesFolder = "Content/Memes";
     private static final String htmlEndPoint = "Content/index.html";
     private static final String baseContentPath = "Content";
@@ -43,6 +46,31 @@ public class server {
     // For persistent connections tracking
     private static Map<Socket, Long> lastActivityTime = new ConcurrentHashMap<>();
     private static final int KEEP_ALIVE_TIMEOUT = 5000; // 5 seconds
+    
+    // ============ Comment Class ============
+    static class Comment {
+        int id;
+        String author;
+        String text;
+        String timestamp;
+        
+        Comment(int id, String author, String text) {
+            this.id = id;
+            this.author = author;
+            this.text = text;
+            this.timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        }
+        
+        String toJson() {
+            return String.format("{\"id\":%d,\"author\":\"%s\",\"text\":\"%s\",\"timestamp\":\"%s\"}", 
+                id, escapeJson(author), escapeJson(text), timestamp);
+        }
+        
+        private String escapeJson(String s) {
+            if (s == null) return "";
+            return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
+        }
+    }
     
     static class Session {
         String sessionId;
@@ -73,12 +101,14 @@ public class server {
         initLoging();
         loadApiKey();
         loadEtagsFromDisk();
+        loadCommentsFromDisk();  // Load saved comments
         startSessionCleanup();
         
         int port = 3000;
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             System.out.println("Server listening on port " + port);
             System.out.println("HTTP/1.1 compliant with Keep-Alive and Chunked Transfer Encoding");
+            System.out.println("=== ADVANCED CRUD: Comments on memes enabled ===");
             log("INFO", "Server started on port " + port);
             
             // Start keep-alive cleanup thread
@@ -90,6 +120,56 @@ public class server {
                 socket.setSoTimeout(KEEP_ALIVE_TIMEOUT);
                 new Thread(() -> handleConnectionWithKeepAlive(socket)).start();
             }
+        }
+    }
+    
+    // ============ Load/Save Comments to Disk ============
+    private static void loadCommentsFromDisk() {
+        try {
+            Path commentsFile = Paths.get("comments.dat");
+            if (Files.exists(commentsFile)) {
+                List<String> lines = Files.readAllLines(commentsFile);
+                for (String line : lines) {
+                    String[] parts = line.split("\\|", 5);
+                    if (parts.length == 5) {
+                        int memeId = Integer.parseInt(parts[0]);
+                        int commentId = Integer.parseInt(parts[1]);
+                        String author = parts[2];
+                        String text = parts[3];
+                        String timestamp = parts[4];
+                        
+                        Comment comment = new Comment(commentId, author, text);
+                        comment.timestamp = timestamp;
+                        
+                        comments.computeIfAbsent(memeId, k -> new ArrayList<>()).add(comment);
+                        
+                        if (commentId >= nextCommentId.get()) {
+                            nextCommentId.set(commentId + 1);
+                        }
+                    }
+                }
+                System.out.println("Loaded comments from disk. Total comment threads: " + comments.size());
+                log("INFO", "Loaded " + comments.size() + " comment threads from disk");
+            }
+        } catch (Exception e) {
+            log("WARNING", "Could not load comments from disk: " + e.getMessage());
+        }
+    }
+    
+    private static void saveCommentsToDisk() {
+        try {
+            Path commentsFile = Paths.get("comments.dat");
+            List<String> lines = new ArrayList<>();
+            for (Map.Entry<Integer, List<Comment>> entry : comments.entrySet()) {
+                int memeId = entry.getKey();
+                for (Comment comment : entry.getValue()) {
+                    lines.add(memeId + "|" + comment.id + "|" + comment.author + "|" + comment.text + "|" + comment.timestamp);
+                }
+            }
+            Files.write(commentsFile, lines);
+            log("INFO", "Saved " + comments.values().stream().mapToInt(List::size).sum() + " comments to disk");
+        } catch (Exception e) {
+            log("WARNING", "Could not save comments to disk: " + e.getMessage());
         }
     }
     
@@ -443,6 +523,7 @@ public class server {
                 id++;
             }
         }
+        nextId.set(id);
         System.out.println("Total memes loaded: " + memes.size());
     }
     
@@ -451,6 +532,47 @@ public class server {
             log("WARNING", "Authentication failed for request: " + method + " " + path);
             return jsonResponseWithCookieAndKeepAlive(401, "Unauthorized", "{\"error\":\"Valid API key required\"}", sessionId, keepAlive);
         }
+        
+        // ============ ADVANCED CRUD: Comment Endpoints ============
+        
+        // GET /resource/{id}/comments - Get all comments for a meme
+        if ("GET".equals(method) && path.matches("/resource/\\d+/comments")) {
+            String[] parts = path.split("/");
+            int memeId = Integer.parseInt(parts[2]);
+            return getCommentsForMeme(memeId, sessionId, keepAlive);
+        }
+        
+        // POST /resource/{id}/comments - Add a comment to a meme
+        if ("POST".equals(method) && path.matches("/resource/\\d+/comments")) {
+            String[] parts = path.split("/");
+            int memeId = Integer.parseInt(parts[2]);
+            return addCommentToMeme(memeId, body, sessionId, keepAlive);
+        }
+        
+        // DELETE /resource/{id}/comments/{commentId} - Delete a comment
+        if ("DELETE".equals(method) && path.matches("/resource/\\d+/comments/\\d+")) {
+            String[] parts = path.split("/");
+            int memeId = Integer.parseInt(parts[2]);
+            int commentId = Integer.parseInt(parts[4]);
+            return deleteCommentFromMeme(memeId, commentId, sessionId, keepAlive);
+        }
+        
+        // PUT /resource/{id}/comments/{commentId} - Update a comment
+        if ("PUT".equals(method) && path.matches("/resource/\\d+/comments/\\d+")) {
+            String[] parts = path.split("/");
+            int memeId = Integer.parseInt(parts[2]);
+            int commentId = Integer.parseInt(parts[4]);
+            return updateCommentOnMeme(memeId, commentId, body, sessionId, keepAlive);
+        }
+        
+        // GET /resource/{id}/comments/count - Get comment count for a meme
+        if ("GET".equals(method) && path.matches("/resource/\\d+/comments/count")) {
+            String[] parts = path.split("/");
+            int memeId = Integer.parseInt(parts[2]);
+            return getCommentCountForMeme(memeId, sessionId, keepAlive);
+        }
+        
+        // ============ Existing endpoints ============
         
         if ("GET".equals(method)) {
             return handleGetRequest(path, body, headers, sessionId, keepAlive);
@@ -507,6 +629,170 @@ public class server {
         
         return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Not found\"}", sessionId, keepAlive);
     }
+    
+    // ============ ADVANCED CRUD: Comment Handler Methods ============
+    
+    private static byte[] getCommentsForMeme(int memeId, String sessionId, boolean keepAlive) {
+        // Check if meme exists
+        if (!memes.containsKey(memeId)) {
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+        }
+        
+        List<Comment> memeComments = comments.getOrDefault(memeId, new ArrayList<>());
+        
+        // Build JSON array of comments
+        StringBuilder json = new StringBuilder("[");
+        for (int i = 0; i < memeComments.size(); i++) {
+            if (i > 0) json.append(",");
+            json.append(memeComments.get(i).toJson());
+        }
+        json.append("]");
+        
+        log("INFO", "Returned " + memeComments.size() + " comments for meme ID " + memeId);
+        return jsonResponseWithCookieAndKeepAlive(200, "OK", json.toString(), sessionId, keepAlive);
+    }
+    
+    private static byte[] addCommentToMeme(int memeId, String body, String sessionId, boolean keepAlive) {
+        // Check if meme exists
+        if (!memes.containsKey(memeId)) {
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+        }
+        
+        // Parse JSON body
+        String author = "";
+        String text = "";
+        
+        try {
+            // Simple JSON parsing
+            if (body.contains("\"author\"")) {
+                int authorStart = body.indexOf("\"author\"") + 9;
+                int authorEnd = body.indexOf(",", authorStart);
+                if (authorEnd == -1) authorEnd = body.indexOf("}", authorStart);
+                author = body.substring(authorStart, authorEnd);
+                author = author.replaceAll("\"", "").trim();
+                // Remove colon if present
+                if (author.startsWith(":")) author = author.substring(1).trim();
+            }
+            
+            if (body.contains("\"text\"")) {
+                int textStart = body.indexOf("\"text\"") + 7;
+                int textEnd = body.indexOf("}", textStart);
+                if (textEnd == -1) textEnd = body.length();
+                text = body.substring(textStart, textEnd);
+                text = text.replaceAll("\"", "").trim();
+                // Remove colon if present
+                if (text.startsWith(":")) text = text.substring(1).trim();
+            }
+            
+            if (author.isEmpty() || text.isEmpty()) {
+                return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", 
+                    "{\"error\":\"Missing author or text. Expected: {\\\"author\\\":\\\"name\\\",\\\"text\\\":\\\"comment\\\"}\"}", 
+                    sessionId, keepAlive);
+            }
+            
+            // Create comment
+            int commentId = nextCommentId.getAndIncrement();
+            Comment comment = new Comment(commentId, author, text);
+            
+            // Add to comments map
+            comments.computeIfAbsent(memeId, k -> new ArrayList<>()).add(comment);
+            saveCommentsToDisk();
+            
+            log("INFO", "Added comment ID " + commentId + " to meme ID " + memeId);
+            return jsonResponseWithCookieAndKeepAlive(201, "Created", comment.toJson(), sessionId, keepAlive);
+            
+        } catch (Exception e) {
+            log("ERROR", "Error parsing comment: " + e.getMessage());
+            return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", 
+                "{\"error\":\"Invalid JSON format. Expected: {\\\"author\\\":\\\"name\\\",\\\"text\\\":\\\"comment\\\"}\"}", 
+                sessionId, keepAlive);
+        }
+    }
+    
+    private static byte[] deleteCommentFromMeme(int memeId, int commentId, String sessionId, boolean keepAlive) {
+        // Check if meme exists
+        if (!memes.containsKey(memeId)) {
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+        }
+        
+        List<Comment> memeComments = comments.get(memeId);
+        if (memeComments == null) {
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
+        }
+        
+        // Find and remove comment
+        boolean removed = memeComments.removeIf(comment -> comment.id == commentId);
+        
+        if (removed) {
+            saveCommentsToDisk();
+            log("INFO", "Deleted comment ID " + commentId + " from meme ID " + memeId);
+            return jsonResponseWithCookieAndKeepAlive(200, "OK", "{\"message\":\"Comment deleted successfully\"}", sessionId, keepAlive);
+        } else {
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
+        }
+    }
+    
+    private static byte[] updateCommentOnMeme(int memeId, int commentId, String body, String sessionId, boolean keepAlive) {
+        // Check if meme exists
+        if (!memes.containsKey(memeId)) {
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+        }
+        
+        List<Comment> memeComments = comments.get(memeId);
+        if (memeComments == null) {
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
+        }
+        
+        // Parse new text
+        String newText = "";
+        try {
+            if (body.contains("\"text\"")) {
+                int textStart = body.indexOf("\"text\"") + 7;
+                int textEnd = body.indexOf("}", textStart);
+                if (textEnd == -1) textEnd = body.length();
+                newText = body.substring(textStart, textEnd);
+                newText = newText.replaceAll("\"", "").trim();
+                if (newText.startsWith(":")) newText = newText.substring(1).trim();
+            }
+            
+            if (newText.isEmpty()) {
+                return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", 
+                    "{\"error\":\"Missing text field. Expected: {\\\"text\\\":\\\"new comment text\\\"}\"}", 
+                    sessionId, keepAlive);
+            }
+            
+            // Find and update comment
+            for (Comment comment : memeComments) {
+                if (comment.id == commentId) {
+                    comment.text = newText;
+                    comment.timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                    saveCommentsToDisk();
+                    log("INFO", "Updated comment ID " + commentId + " on meme ID " + memeId);
+                    return jsonResponseWithCookieAndKeepAlive(200, "OK", comment.toJson(), sessionId, keepAlive);
+                }
+            }
+            
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
+            
+        } catch (Exception e) {
+            log("ERROR", "Error updating comment: " + e.getMessage());
+            return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", 
+                "{\"error\":\"Invalid JSON format. Expected: {\\\"text\\\":\\\"new comment text\\\"}\"}", 
+                sessionId, keepAlive);
+        }
+    }
+    
+    private static byte[] getCommentCountForMeme(int memeId, String sessionId, boolean keepAlive) {
+        // Check if meme exists
+        if (!memes.containsKey(memeId)) {
+            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+        }
+        
+        int count = comments.getOrDefault(memeId, new ArrayList<>()).size();
+        return jsonResponseWithCookieAndKeepAlive(200, "OK", "{\"memeId\":" + memeId + ",\"commentCount\":" + count + "}", sessionId, keepAlive);
+    }
+    
+    // ============ Existing Handler Methods (unchanged) ============
     
     private static byte[] handleGetRequest(String path, String body, Map<String,String> headers, String sessionId, boolean keepAlive) {
         if (path.equals("/") || path.isEmpty()) {
@@ -618,6 +904,9 @@ public class server {
         if (path.matches("/resource/[^/]+")) {
             try {
                 int id = Integer.parseInt(path.split("/")[2]);
+                // Also delete all comments for this meme
+                comments.remove(id);
+                saveCommentsToDisk();
                 return deleteResourceById(id, sessionId, keepAlive);
             } catch (NumberFormatException e) {
                 return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId, keepAlive);

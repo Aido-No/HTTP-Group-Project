@@ -49,6 +49,7 @@ public class Server {
             if (file.isFile() && file.getName().endsWith(".json")) {
                 int id = nextId.getAndIncrement();
                 memes.put(id, file.getPath());
+                System.out.println(id);
             }
         }
     }
@@ -121,7 +122,7 @@ public class Server {
     }
 
     private static byte[] handleDeleteRequest(String path, String body) {
-            if (path.matches("/Memes/[^/]+")) {
+            if (path.matches("/memes/[^/]+")) {
                 int id = Integer.parseInt(path.split("/")[2]);
                 System.out.println(id);
 
@@ -176,9 +177,14 @@ public class Server {
         if (entry.isBlank()) {
             return jsonResponse(400, "Bad Request", "{\"error\":\"Empty body\"}");
         }
-
+        
+        System.out.println(id);
         Path memePath = Paths.get(memesFolder, id + ".json");
-
+        int suffix = 1;
+        while (Files.exists(memePath)) {
+            memePath = Paths.get(memesFolder, "joke_" + id + "(" + suffix + ").json");
+            suffix++;
+        }
         try {
             Files.createDirectories(memePath.getParent());
             Files.write(memePath, entry.getBytes(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);

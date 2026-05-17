@@ -530,7 +530,7 @@ public class Server {
     private static byte[] route(String method, String path, String body, Map<String, String> headers, String sessionId, boolean keepAlive) {
         if (!isAuthenticated(headers)) {
             log("WARNING", "Authentication failed for request: " + method + " " + path);
-            return jsonResponseWithCookieAndKeepAlive(401, "Unauthorized", "{\"error\":\"Valid API key required\"}", sessionId, keepAlive);
+            return jsonResponse(401, "Unauthorized", "{\"error\":\"Valid API key required\"}");
         }
         
         // ============ ADVANCED CRUD: Comment Endpoints ============
@@ -579,29 +579,7 @@ public class Server {
         }
         
         if ("POST".equals(method) && "/memes".equals(path)) {
-            try {
-                int id = nextId.getAndIncrement();
-                if (body == null || body.length() <= 1) {
-                    return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid body\"}", sessionId, keepAlive);
-                }
-                String entry = "{\"id\":" + id + "," + body.substring(1);
-                
-                String filePath = memesFolder + "/meme_" + id + ".json";
-                Path fullPath = getResourcePath(filePath);
-                Files.createDirectories(fullPath.getParent());
-                Files.write(fullPath, entry.getBytes());
-                
-                memes.put(id, fullPath.toString());
-                String etag = generateEtagFromContent(entry);
-                etags.put(id, etag);
-                saveEtagsToDisk();
-                
-                log("INFO", "Created new meme with ID: " + id + " ETag: " + etag);
-                return jsonResponseWithETagCookieAndKeepAlive(201, "Created", entry, etag, sessionId, keepAlive);
-            } catch (Exception e) {
-                log("ERROR", "Error creating meme: " + e.getMessage());
-                return jsonResponseWithCookieAndKeepAlive(500, "Internal Server Error", "{\"error\":\"Failed to create meme\"}", sessionId, keepAlive);
-            }
+            return handlePostRequest(body, sessionId, keepAlive);
         }
         
         if ("PUT".equals(method) && path.matches("/memes/[^/]+")) {
@@ -612,14 +590,14 @@ public class Server {
                     String currentEtag = getEtagForResource(id);
                     
                     if (ifMatch != null && currentEtag != null && !ifMatch.equals(currentEtag)) {
-                        return jsonResponseWithCookieAndKeepAlive(412, "Precondition Failed", "{\"error\":\"Resource has been modified\"}", sessionId, keepAlive);
+                        return jsonResponseWithCookie(412, "Precondition Failed", "{\"error\":\"Resource has been modified\"}", sessionId, keepAlive);
                     }
                     return handlePutRequest(id, body, sessionId, keepAlive);
                 } else {
-                    return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+                    return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
                 }
             } catch (NumberFormatException e) {
-                return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId, keepAlive);
+                return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId, keepAlive);
             }
         }
         
@@ -627,7 +605,7 @@ public class Server {
             return handleDeleteRequest(path, body, sessionId, keepAlive);
         }
         
-        return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Not found\"}", sessionId, keepAlive);
+        return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Not found\"}", sessionId, keepAlive);
     }
     
     // ============ ADVANCED CRUD: Comment Handler Methods ============
@@ -635,7 +613,7 @@ public class Server {
     private static byte[] getCommentsForMeme(int memeId, String sessionId, boolean keepAlive) {
         // Check if meme exists
         if (!memes.containsKey(memeId)) {
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
         }
         
         List<Comment> memeComments = comments.getOrDefault(memeId, new ArrayList<>());
@@ -649,13 +627,13 @@ public class Server {
         json.append("]");
         
         log("INFO", "Returned " + memeComments.size() + " comments for meme ID " + memeId);
-        return jsonResponseWithCookieAndKeepAlive(200, "OK", json.toString(), sessionId, keepAlive);
+        return jsonResponseWithCookie(200, "OK", json.toString(), sessionId, keepAlive);
     }
     
     private static byte[] addCommentToMeme(int memeId, String body, String sessionId, boolean keepAlive) {
         // Check if meme exists
         if (!memes.containsKey(memeId)) {
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
         }
         
         // Parse JSON body
@@ -685,7 +663,7 @@ public class Server {
             }
             
             if (author.isEmpty() || text.isEmpty()) {
-                return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", 
+                return jsonResponseWithCookie(400, "Bad Request", 
                     "{\"error\":\"Missing author or text. Expected: {\\\"author\\\":\\\"name\\\",\\\"text\\\":\\\"comment\\\"}\"}", 
                     sessionId, keepAlive);
             }
@@ -699,11 +677,11 @@ public class Server {
             saveCommentsToDisk();
             
             log("INFO", "Added comment ID " + commentId + " to meme ID " + memeId);
-            return jsonResponseWithCookieAndKeepAlive(201, "Created", comment.toJson(), sessionId, keepAlive);
+            return jsonResponseWithCookie(201, "Created", comment.toJson(), sessionId, keepAlive);
             
         } catch (Exception e) {
             log("ERROR", "Error parsing comment: " + e.getMessage());
-            return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", 
+            return jsonResponseWithCookie(400, "Bad Request", 
                 "{\"error\":\"Invalid JSON format. Expected: {\\\"author\\\":\\\"name\\\",\\\"text\\\":\\\"comment\\\"}\"}", 
                 sessionId, keepAlive);
         }
@@ -712,12 +690,12 @@ public class Server {
     private static byte[] deleteCommentFromMeme(int memeId, int commentId, String sessionId, boolean keepAlive) {
         // Check if meme exists
         if (!memes.containsKey(memeId)) {
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
         }
         
         List<Comment> memeComments = comments.get(memeId);
         if (memeComments == null) {
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
         }
         
         // Find and remove comment
@@ -726,21 +704,21 @@ public class Server {
         if (removed) {
             saveCommentsToDisk();
             log("INFO", "Deleted comment ID " + commentId + " from meme ID " + memeId);
-            return jsonResponseWithCookieAndKeepAlive(200, "OK", "{\"message\":\"Comment deleted successfully\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(200, "OK", "{\"message\":\"Comment deleted successfully\"}", sessionId, keepAlive);
         } else {
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
         }
     }
     
     private static byte[] updateCommentOnMeme(int memeId, int commentId, String body, String sessionId, boolean keepAlive) {
         // Check if meme exists
         if (!memes.containsKey(memeId)) {
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
         }
         
         List<Comment> memeComments = comments.get(memeId);
         if (memeComments == null) {
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
         }
         
         // Parse new text
@@ -756,7 +734,7 @@ public class Server {
             }
             
             if (newText.isEmpty()) {
-                return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", 
+                return jsonResponseWithCookie(400, "Bad Request", 
                     "{\"error\":\"Missing text field. Expected: {\\\"text\\\":\\\"new comment text\\\"}\"}", 
                     sessionId, keepAlive);
             }
@@ -768,15 +746,15 @@ public class Server {
                     comment.timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
                     saveCommentsToDisk();
                     log("INFO", "Updated comment ID " + commentId + " on meme ID " + memeId);
-                    return jsonResponseWithCookieAndKeepAlive(200, "OK", comment.toJson(), sessionId, keepAlive);
+                    return jsonResponseWithCookie(200, "OK", comment.toJson(), sessionId, keepAlive);
                 }
             }
             
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Comment not found\"}", sessionId, keepAlive);
             
         } catch (Exception e) {
             log("ERROR", "Error updating comment: " + e.getMessage());
-            return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", 
+            return jsonResponseWithCookie(400, "Bad Request", 
                 "{\"error\":\"Invalid JSON format. Expected: {\\\"text\\\":\\\"new comment text\\\"}\"}", 
                 sessionId, keepAlive);
         }
@@ -785,18 +763,18 @@ public class Server {
     private static byte[] getCommentCountForMeme(int memeId, String sessionId, boolean keepAlive) {
         // Check if meme exists
         if (!memes.containsKey(memeId)) {
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Meme not found\"}", sessionId, keepAlive);
         }
         
         int count = comments.getOrDefault(memeId, new ArrayList<>()).size();
-        return jsonResponseWithCookieAndKeepAlive(200, "OK", "{\"memeId\":" + memeId + ",\"commentCount\":" + count + "}", sessionId, keepAlive);
+        return jsonResponseWithCookie(200, "OK", "{\"memeId\":" + memeId + ",\"commentCount\":" + count + "}", sessionId, keepAlive);
     }
     
-    // ============ Existing Handler Methods (unchanged) ============
+    // ============ Existing Handler Methods ============
     
     private static byte[] handleGetRequest(String path, String body, Map<String,String> headers, String sessionId, boolean keepAlive) {
         if (path.equals("/") || path.isEmpty()) {
-            return getStatichtml(sessionId, keepAlive);
+            return getStaticHtml(sessionId, keepAlive);
         }
         
         if (path.equals("/resource")) {
@@ -808,7 +786,7 @@ public class Server {
                 int id = Integer.parseInt(path.split("/")[2]);
                 return getResourceById(id, headers, sessionId, keepAlive);
             } catch (NumberFormatException e) {
-                return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId, keepAlive);
+                return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId, keepAlive);
             }
         }
         
@@ -821,16 +799,44 @@ public class Server {
         }
         
         if (path.startsWith("/Resources/") || path.startsWith("/Content/")) {
-            return gethtmlResource(path, sessionId, keepAlive);
+            return getHtmlResource(path, sessionId, keepAlive);
         }
         
-        return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid request path\"}", sessionId, keepAlive);
+        return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid request path\"}", sessionId, keepAlive);
+    }
+    
+    // The restored handlePostRequest function
+    private static byte[] handlePostRequest(String body, String sessionId, boolean keepAlive) {
+        if (body == null || body.length() <= 1) {
+            return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid body\"}", sessionId, keepAlive);
+        }
+        
+        int id = nextId.getAndIncrement();
+        String entry = "{\"id\":" + id + "," + body.substring(1);
+        
+        String filePath = memesFolder + "/meme_" + id + ".json";
+        try {
+            Path fullPath = getResourcePath(filePath);
+            Files.createDirectories(fullPath.getParent());
+            Files.write(fullPath, entry.getBytes());
+            
+            memes.put(id, fullPath.toString());
+            String etag = generateEtagFromContent(entry);
+            etags.put(id, etag);
+            saveEtagsToDisk();
+            
+            log("INFO", "Created new meme with ID: " + id + " ETag: " + etag);
+            return jsonResponseWithETagAndCookie(201, "Created", entry, etag, sessionId, keepAlive);
+        } catch (Exception e) {
+            log("ERROR", "Error creating meme: " + e.getMessage());
+            return jsonResponseWithCookie(500, "Internal Server Error", "{\"error\":\"Failed to create meme\"}", sessionId, keepAlive);
+        }
     }
     
     private static byte[] testEtagResponse(String sessionId, boolean keepAlive) {
         String testContent = "{\"message\":\"This is a test resource for ETag validation\",\"timestamp\":" + System.currentTimeMillis() + "}";
         String etag = generateEtagFromContent(testContent);
-        return jsonResponseWithETagCookieAndKeepAlive(200, "OK", testContent, etag, sessionId, keepAlive);
+        return jsonResponseWithETagAndCookie(200, "OK", testContent, etag, sessionId, keepAlive);
     }
     
     private static byte[] getSessionInfo(String sessionId, boolean keepAlive) {
@@ -838,9 +844,9 @@ public class Server {
         if (session != null) {
             String info = String.format("{\"sessionId\":\"%s\",\"userId\":\"%s\",\"createdAt\":%d,\"lastAccessedAt\":%d,\"isExpired\":%b}",
                 session.sessionId, session.userId, session.createdAt, session.lastAccessedAt, session.isExpired());
-            return jsonResponseWithCookieAndKeepAlive(200, "OK", info, sessionId, keepAlive);
+            return jsonResponseWithCookie(200, "OK", info, sessionId, keepAlive);
         }
-        return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Session not found\"}", sessionId, keepAlive);
+        return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Session not found\"}", sessionId, keepAlive);
     }
     
     private static byte[] getResourceById(int id, Map<String, String> headers, String sessionId, boolean keepAlive) {
@@ -849,7 +855,7 @@ public class Server {
                 String memePath = memes.get(id);
                 Path path = Paths.get(memePath);
                 if (!Files.exists(path)) {
-                    return jsonResponseWithCookieAndKeepAlive(404, "Resource file missing", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
+                    return jsonResponseWithCookie(404, "Resource file missing", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
                 }
                 
                 String meme = new String(Files.readAllBytes(path));
@@ -860,32 +866,32 @@ public class Server {
                 if (clientETag != null) {
                     clientETag = clientETag.replaceAll("^\"|\"$", "");
                     if (clientETag.equals(currentETag)) {
-                        return jsonResponseWithCookieAndKeepAlive(304, "Not Modified", true, sessionId, keepAlive);
+                        return jsonResponseWithCookie(304, "Not Modified", true, sessionId, keepAlive);
                     }
                 }
                 
-                return jsonResponseWithETagCookieAndKeepAlive(200, "OK", meme, currentETag, sessionId, keepAlive);
+                return jsonResponseWithETagAndCookie(200, "OK", meme, currentETag, sessionId, keepAlive);
             } catch (Exception e) {
                 log("ERROR", "Error reading meme ID " + id + ": " + e.getMessage());
-                return jsonResponseWithCookieAndKeepAlive(500, "Internal Server Error", "{\"error\":\"Failed to read resource\"}", sessionId, keepAlive);
+                return jsonResponseWithCookie(500, "Internal Server Error", "{\"error\":\"Failed to read resource\"}", sessionId, keepAlive);
             }
         }
-        return jsonResponseWithCookieAndKeepAlive(404, "Not found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
+        return jsonResponseWithCookie(404, "Not found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
     }
     
     private static byte[] handlePutRequest(int id, String body, String sessionId, boolean keepAlive) {
         if (body == null || body.length() <= 1) {
-            return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId, keepAlive);
         }
         
         String entry = body.substring(1);
         if (entry.trim().isEmpty()) {
-            return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId, keepAlive);
         }
         
         String memepath = memes.get(id);
         if (memepath == null) {
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
         }
         
         try {
@@ -893,10 +899,10 @@ public class Server {
             String newETag = generateEtagFromContent(entry);
             etags.put(id, newETag);
             saveEtagsToDisk();
-            return jsonResponseWithETagCookieAndKeepAlive(200, "OK", entry, newETag, sessionId, keepAlive);
+            return jsonResponseWithETagAndCookie(200, "OK", entry, newETag, sessionId, keepAlive);
         } catch (Exception e) {
             log("ERROR", "Error updating meme ID " + id + ": " + e.getMessage());
-            return jsonResponseWithCookieAndKeepAlive(500, "Internal Server Error", "{\"error\":\"Failed to update resource\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(500, "Internal Server Error", "{\"error\":\"Failed to update resource\"}", sessionId, keepAlive);
         }
     }
     
@@ -909,15 +915,15 @@ public class Server {
                 saveCommentsToDisk();
                 return deleteResourceById(id, sessionId, keepAlive);
             } catch (NumberFormatException e) {
-                return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId, keepAlive);
+                return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid ID format\"}", sessionId, keepAlive);
             }
         }
-        return jsonResponseWithCookieAndKeepAlive(400, "Bad Request", "{\"error\":\"Invalid delete path\"}", sessionId, keepAlive);
+        return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Invalid delete path\"}", sessionId, keepAlive);
     }
     
     private static byte[] getAllResources(String sessionId, boolean keepAlive) {
         if (memes.isEmpty()) {
-            return jsonResponseWithCookieAndKeepAlive(200, "OK", "[]", sessionId, keepAlive);
+            return jsonResponseWithCookie(200, "OK", "[]", sessionId, keepAlive);
         }
         
         List<String> validMemes = new ArrayList<>();
@@ -931,7 +937,7 @@ public class Server {
         }
         
         String json = "[" + String.join(",", validMemes) + "]";
-        return jsonResponseWithCookieAndKeepAlive(200, "OK", json, sessionId, keepAlive);
+        return jsonResponseWithCookie(200, "OK", json, sessionId, keepAlive);
     }
     
     private static byte[] deleteResourceById(int id, String sessionId, boolean keepAlive) {
@@ -945,12 +951,12 @@ public class Server {
                 memes.remove(id);
                 etags.remove(id);
                 saveEtagsToDisk();
-                return jsonResponseWithCookieAndKeepAlive(200, "OK", "{\"message\":\"Resource deleted successfully\"}", sessionId, keepAlive);
+                return jsonResponseWithCookie(200, "OK", "{\"message\":\"Resource deleted successfully\"}", sessionId, keepAlive);
             } catch (Exception e) {
-                return jsonResponseWithCookieAndKeepAlive(500, "Internal Server Error", "{\"error\":\"Failed to delete resource\"}", sessionId, keepAlive);
+                return jsonResponseWithCookie(500, "Internal Server Error", "{\"error\":\"Failed to delete resource\"}", sessionId, keepAlive);
             }
         } else {
-            return jsonResponseWithCookieAndKeepAlive(404, "Not found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
         }
     }
     
@@ -965,7 +971,7 @@ public class Server {
         return Paths.get(relativePath);
     }
     
-    private static byte[] getStatichtml(String sessionId, boolean keepAlive) {
+    private static byte[] getStaticHtml(String sessionId, boolean keepAlive) {
         try {
             String[] possiblePaths = {
                 htmlEndPoint, "./" + htmlEndPoint, "src/HTTPALL/" + htmlEndPoint,
@@ -982,18 +988,18 @@ public class Server {
             }
             
             if (fullPath == null) {
-                return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"index.html not found\"}", sessionId, keepAlive);
+                return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"index.html not found\"}", sessionId, keepAlive);
             }
             
             byte[] fileBytes = Files.readAllBytes(fullPath);
             String contentType = getContentType(htmlEndPoint);
-            return fileResponseWithCookieAndKeepAlive(200, "OK", fileBytes, contentType, sessionId, keepAlive);
+            return fileResponseWithCookie(200, "OK", fileBytes, contentType, sessionId, keepAlive);
         } catch (Exception e) {
-            return jsonResponseWithCookieAndKeepAlive(500, "Internal server error", "{\"error\":\"Failed to load page\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(500, "Internal server error", "{\"error\":\"Failed to load page\"}", sessionId, keepAlive);
         }
     }
     
-    private static byte[] gethtmlResource(String fileName, String sessionId, boolean keepAlive) {
+    private static byte[] getHtmlResource(String fileName, String sessionId, boolean keepAlive) {
         try {
             String cleanPath = fileName.startsWith("/") ? fileName.substring(1) : fileName;
             String[] possiblePaths = {
@@ -1013,12 +1019,12 @@ public class Server {
             if (fullPath != null && Files.exists(fullPath)) {
                 byte[] fileBytes = Files.readAllBytes(fullPath);
                 String contentType = getContentType(fileName);
-                return fileResponseWithCookieAndKeepAlive(200, "OK", fileBytes, contentType, sessionId, keepAlive);
+                return fileResponseWithCookie(200, "OK", fileBytes, contentType, sessionId, keepAlive);
             }
             
-            return jsonResponseWithCookieAndKeepAlive(404, "Not Found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(404, "Not Found", "{\"error\":\"Resource not found\"}", sessionId, keepAlive);
         } catch (Exception e) {
-            return jsonResponseWithCookieAndKeepAlive(500, "Internal server error", "{\"error\":\"Failed to load resource\"}", sessionId, keepAlive);
+            return jsonResponseWithCookie(500, "Internal server error", "{\"error\":\"Failed to load resource\"}", sessionId, keepAlive);
         }
     }
     
@@ -1034,7 +1040,7 @@ public class Server {
         return "application/octet-stream";
     }
     
-    private static byte[] buildResponseWithKeepAlive(int code, String reason, String contentType, byte[] body, boolean keepAlive) {
+    private static byte[] buildResponse(int code, String reason, String contentType, byte[] body, boolean keepAlive) {
         String connectionHeader = keepAlive ? "keep-alive" : "close";
         String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
         
@@ -1052,7 +1058,8 @@ public class Server {
         return combined;
     }
     
-    private static byte[] jsonResponseWithCookieAndKeepAlive(int code, String reason, String json, String sessionId, boolean keepAlive) {
+    // Response helper methods (renamed without "AndKeepAlive")
+    private static byte[] jsonResponseWithCookie(int code, String reason, String json, String sessionId, boolean keepAlive) {
         String connectionHeader = keepAlive ? "keep-alive" : "close";
         String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
         
@@ -1072,7 +1079,8 @@ public class Server {
         return combined;
     }
     
-    private static byte[] jsonResponseWithCookieAndKeepAlive(int code, String reason, boolean noBody, String sessionId, boolean keepAlive) {
+    // Overloaded version for responses with no body (like 304)
+    private static byte[] jsonResponseWithCookie(int code, String reason, boolean noBody, String sessionId, boolean keepAlive) {
         String connectionHeader = keepAlive ? "keep-alive" : "close";
         String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
         
@@ -1084,7 +1092,7 @@ public class Server {
         return headers.getBytes();
     }
     
-    private static byte[] jsonResponseWithETagCookieAndKeepAlive(int code, String reason, String json, String etag, String sessionId, boolean keepAlive) {
+    private static byte[] jsonResponseWithETagAndCookie(int code, String reason, String json, String etag, String sessionId, boolean keepAlive) {
         String quotedEtag = "\"" + etag + "\"";
         String connectionHeader = keepAlive ? "keep-alive" : "close";
         String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
@@ -1107,7 +1115,7 @@ public class Server {
         return combined;
     }
     
-    private static byte[] fileResponseWithCookieAndKeepAlive(int code, String reason, byte[] fileBytes, String contentType, String sessionId, boolean keepAlive) {
+    private static byte[] fileResponseWithCookie(int code, String reason, byte[] fileBytes, String contentType, String sessionId, boolean keepAlive) {
         String connectionHeader = keepAlive ? "keep-alive" : "close";
         String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
         
@@ -1124,5 +1132,28 @@ public class Server {
         System.arraycopy(headerBytes, 0, combined, 0, headerBytes.length);
         System.arraycopy(fileBytes, 0, combined, headerBytes.length, fileBytes.length);
         return combined;
+    }
+    
+    // Original jsonResponse without cookies (for authentication errors)
+    private static byte[] jsonResponse(int code, String reason, String json) {
+        String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
+                        + "Content-Type: application/json\r\n"
+                        + "Content-Length: " + json.getBytes().length + "\r\n"
+                        + "Connection: close\r\n"
+                        + "\r\n";
+        
+        byte[] headerBytes = headers.getBytes();
+        byte[] jsonBytes = json.getBytes();
+        byte[] combined = new byte[headerBytes.length + jsonBytes.length];
+        System.arraycopy(headerBytes, 0, combined, 0, headerBytes.length);
+        System.arraycopy(jsonBytes, 0, combined, headerBytes.length, jsonBytes.length);
+        return combined;
+    }
+    
+    private static byte[] jsonResponse(int code, String reason) {
+        String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
+                        + "Connection: close\r\n"
+                        + "\r\n";
+        return headers.getBytes();
     }
 }

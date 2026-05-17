@@ -35,9 +35,9 @@ public class Server {
     private static Map<Integer, List<Comment>> comments = new ConcurrentHashMap<>();
     private static final AtomicInteger nextCommentId = new AtomicInteger(1);
     
-    private static final String memesFolder = "Content/Memes";
-    private static final String htmlEndPoint = "Content/index.html";
-    private static final String baseContentPath = "Content";
+    private static final String memesFolder = "http grupal proyect/src/HTTPALL/Content/Memes";
+    private static final String htmlEndPoint = "http grupal proyect/src/HTTPALL/Content/index.html";
+    private static final String baseContentPath = "http grupal proyect/src/HTTPALL/Content";
     
     private static Map<Integer, String> etags = new ConcurrentHashMap<>();
     private static Map<String, String> fileEtagCache = new ConcurrentHashMap<>();
@@ -884,7 +884,7 @@ public class Server {
             return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId, keepAlive);
         }
         
-        String entry = body.substring(1);
+        String entry = body;
         if (entry.trim().isEmpty()) {
             return jsonResponseWithCookie(400, "Bad Request", "{\"error\":\"Empty body\"}", sessionId, keepAlive);
         }

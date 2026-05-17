@@ -1,7 +1,6 @@
 package HTTPALL;
 
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -40,7 +39,6 @@ public class Server {
     private static final String baseContentPath = "http grupal proyect/src/HTTPALL/Content";
     
     private static Map<Integer, String> etags = new ConcurrentHashMap<>();
-    private static Map<String, String> fileEtagCache = new ConcurrentHashMap<>();
     private static Map<String, Session> sessions = new ConcurrentHashMap<>();
     
     // For persistent connections tracking
@@ -1040,7 +1038,7 @@ public class Server {
         return "application/octet-stream";
     }
     
-    private static byte[] buildResponse(int code, String reason, String contentType, byte[] body, boolean keepAlive) {
+    /*private static byte[] buildResponse(int code, String reason, String contentType, byte[] body, boolean keepAlive) {
         String connectionHeader = keepAlive ? "keep-alive" : "close";
         String keepAliveHeader = keepAlive ? "Keep-Alive: timeout=" + (KEEP_ALIVE_TIMEOUT / 1000) + "\r\n" : "";
         
@@ -1056,7 +1054,7 @@ public class Server {
         System.arraycopy(headerBytes, 0, combined, 0, headerBytes.length);
         System.arraycopy(body, 0, combined, headerBytes.length, body.length);
         return combined;
-    }
+    }*/
     
     // Response helper methods (renamed without "AndKeepAlive")
     private static byte[] jsonResponseWithCookie(int code, String reason, String json, String sessionId, boolean keepAlive) {
@@ -1150,10 +1148,10 @@ public class Server {
         return combined;
     }
     
-    private static byte[] jsonResponse(int code, String reason) {
+    /*private static byte[] jsonResponse(int code, String reason) {
         String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
                         + "Connection: close\r\n"
                         + "\r\n";
         return headers.getBytes();
-    }
+    }*/
 }
